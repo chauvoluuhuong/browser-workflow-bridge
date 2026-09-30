@@ -1,0 +1,14 @@
+{
+  "name": "browser-workflow",
+  "description": "Browser Workflow plugins: the bridge that runs workflows in your own Chrome.",
+  "owner": {
+    "name": "chauvoluuhuong"
+  },
+  "plugins": [
+    {
+      "name": "browser-workflow-bridge",
+      "source": "./",
+      "description": "Lets the Browser Workflow connector run your workflows in your own Chrome."
+    }
+  ]
+}

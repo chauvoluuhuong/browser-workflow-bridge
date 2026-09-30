@@ -1,0 +1,36 @@
+{
+  "name": "browser-workflow-bridge",
+  "displayName": "Browser Workflow Bridge",
+  "version": "0.2.0",
+  "description": "Runs your Browser Workflow automations in your own Chrome, and connects Claude to the Browser Workflow server. The bridge holds no workflow logic: it carries out the server's browser commands in tabs it opens.",
+  "author": {
+    "name": "chauvoluuhuong"
+  },
+  "license": "MIT",
+  "keywords": [
+    "browser",
+    "automation",
+    "chrome",
+    "workflow"
+  ],
+  "userConfig": {
+    "token": {
+      "type": "string",
+      "title": "Bridge token",
+      "description": "Links this bridge to your Browser Workflow account. Create it in the Account view.",
+      "sensitive": true
+    },
+    "server_url": {
+      "type": "string",
+      "title": "Server",
+      "description": "The Browser Workflow server's address. Change it only for development.",
+      "default": "http://127.0.0.1:3310"
+    },
+    "allowed_sites": {
+      "type": "string",
+      "title": "Allowed sites",
+      "description": "Only let workflows open these sites, separated by commas (for example: example.com, shop.example.org). * allows any site.",
+      "default": "*"
+    }
+  }
+}

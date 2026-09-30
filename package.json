@@ -1,0 +1,21 @@
+{
+  "name": "browser-workflow-bridge",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Local bridge between the Browser Workflow server and the user's Chrome (Claude plugin).",
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test",
+    "validate": "claude plugin validate .claude-plugin/plugin.json && claude plugin validate .claude-plugin/marketplace.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.1.0",
+    "@modelcontextprotocol/server": "2.1.0",
+    "chrome-devtools-mcp": "1.10.1",
+    "playwright-core": "1.63.0",
+    "zod": "4.6.5"
+  }
+}

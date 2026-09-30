@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "bridge": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/src/index.js"],
+      "env": {
+        "BW_SERVER_URL": "${user_config.server_url}",
+        "BW_BRIDGE_TOKEN": "${user_config.token}",
+        "BW_ALLOWED_SITES": "${user_config.allowed_sites}"
+      }
+    },
+    "browser-workflow": {
+      "type": "http",
+      "url": "${user_config.server_url}/mcp"
+    }
+  }
+}
