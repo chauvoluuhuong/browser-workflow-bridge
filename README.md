@@ -1,15 +1,15 @@
 # Browser Workflow Bridge
 
-A Claude plugin that runs your Browser Workflow automations in your own Chrome, with your own logins, and connects Claude to the Browser Workflow server.
+A Claude plugin that runs your Browser Workflow automations in your own Chrome, with your own logins, keeps what they produce on your computer, and connects Claude to the Browser Workflow server.
 
-The server decides every step of a workflow. This bridge is a small local program with no workflow logic: it connects to the server, carries out simple browser commands in tabs it opens, and sends the results back. It also gives Claude page-inspection tools for the same browser, so Claude can explore a site before writing or fixing a workflow.
+The server decides every step of a workflow. This bridge is a small local program with no workflow logic: it connects to the server, carries out simple browser commands in tabs it opens, saves each run's screenshots, page HTML and data in a folder on your computer, and answers the server. It also gives Claude page-inspection tools for the same browser, so Claude can explore a site before writing or fixing a workflow.
 
 ## What the plugin adds
 
 | Part | What it is |
 |---|---|
 | `bridge` | A local MCP server that Claude starts. It connects to the Browser Workflow server and runs the commands below. To Claude it offers `bridge_status` (connection state; pause or resume) and the `page_*` inspector tools |
-| `browser-workflow` | The Browser Workflow connector at `<Server>/mcp`: your workflows, runs and data. You sign in to it with your Browser Workflow account |
+| `browser-workflow` | The Browser Workflow connector at `<Server>/mcp`: your workflows, runs and data. Connecting takes one click (**Continue**); you can create an account later, or sign in if you have one |
 
 The bridge runs where Claude can start local MCP servers from plugins: Claude Code (terminal, IDE, and the desktop app's Code tab) and Cowork on your computer.
 
@@ -23,24 +23,49 @@ The bridge connects to Chrome through the Chrome DevTools Protocol (Playwright) 
 | `navigate` | Loads a URL in that tab |
 | `act` | Clicks, types, selects or waits on one element, found by XPath |
 | `evaluate` | Runs the workflow's JavaScript in that tab |
-| `capture` | Takes a screenshot, the page HTML or an excerpt, and console errors |
+| `capture` | Takes a screenshot, the page HTML or an excerpt, console errors and the page's requests |
 | `takeApiCalls` | Returns the fetch/XHR requests the tab made, with credentials in headers removed |
 | `close` | Closes what `open` created |
 | `check` | Tells whether Chrome can be reached, before a run starts |
+| `store` | Saves or reads one of your runs in the bridge's data folder (see "What it keeps on your computer") |
+
+`navigate`, `act` and `evaluate` can carry an `after` option: the bridge then captures the page right after the action, as `capture` would, and answers once for both.
 
 Rules the bridge enforces itself, even if the server asked for something else:
 
 - It acts only on tabs it opened for a run. It never reads or controls your other tabs or windows.
 - It opens only `http` and `https` pages (never `file:`, `chrome:` or similar), and only the **Allowed sites** when you set them.
-- At most 3 runs are open at once, and a run's tab closes after 60 minutes.
-- Page HTML sent back is capped at 2 MB.
+- At most 3 runs are open at once. A run's tab closes at the time limit the server gave for it, and never later than 60 minutes.
+- Page HTML is capped at 2 MB, and one answer to the server at 6 MB.
+- `store` reads and writes only runs, only inside your account's folder. It can't be given a path, and it has no way to read other files.
+- When a run is kept on your computer and saving fails (a full disk, for example), the step fails and what was captured is dropped. It is not sent to the server instead.
 - When the connection to the server drops, it closes every tab it opened.
 - `bridge_status` with `pause` disconnects it; nothing runs in your browser until you resume it.
 
+## What it keeps on your computer
+
+Runs made in your own Chrome are saved by the bridge, not by the server. Each run gets a folder in the bridge's data folder (`~/.browser-workflow/accounts/<your account id>/runs/<run id>/` unless you set **Data folder**):
+
+| File | What |
+|---|---|
+| `run.json` | The run's record: its inputs, and each step's state, result or error |
+| `<step>.jpg`, `<step>.html.gz` | A screenshot and the page's HTML after each browser step |
+| `items.json` | The data your workflow extracted |
+| `apicalls.json` | The fetch/XHR requests the pages made, with `Authorization`, `Cookie` and similar headers replaced by `[redacted]` |
+
+The last 20 runs of each workflow are kept; older ones are deleted when a new run starts. Nothing else is deleted for you. They are plain files: you can open or delete them yourself. `bridge_status` shows where the folder is.
+
 ## What it sends, and where
 
-- **The Browser Workflow server** (the **Server** setting, `https://…`): the bridge connects to `<Server>/bridge` over a secure WebSocket and sends command results. These can include page URLs, data a workflow extracts, screenshots, page HTML or excerpts, console errors, and the fetch/XHR requests a page made (with `Authorization`, `Cookie` and similar headers replaced by `[redacted]`). Claude's connector entry talks to `<Server>/mcp`.
-- **Nothing else.** The page inspector (`chrome-devtools-mcp`) runs on your computer, talks only to your Chrome, and runs with usage statistics turned off. The bridge stores nothing outside your computer except what it sends to the server.
+- **The Browser Workflow server** (the **Server** setting, `https://…`): the bridge sends HTTPS requests to `<Server>/api/bridge/v1` and holds no connection open to it. An older server only has a WebSocket at `<Server>/bridge`; the bridge uses that when the server offers nothing else. Claude's connector entry talks to `<Server>/mcp`. For a run it sends:
+  - each step's result (page URL, the value your step's code returned, or the error), because the server decides the next step from it;
+  - console errors, and for a failed step the HTML near the element it was looking for (at most 8 KB), so the failure can be explained;
+  - the names of the files it saved, not their content;
+  - what you or Claude ask to see of a past run: a step's screenshot, its extracted data or its requests. This is read from the folder above and sent when asked for, for example when Claude looks at a failed step to fix the workflow. The server passes it on and does not keep it.
+  - With the HTTP API, the bridge also sends back, unchanged, a signed note the server gave it with the previous step (the run's inputs, its variables and its latest two steps): the server keeps nothing of a run between two steps, so it needs this to decide the next one. The run's record itself is saved here, by the bridge, as each step is answered.
+- **A signal channel** (with the HTTP API): the address the server gives the bridge to listen on, so the bridge knows when to ask for work without a connection to the server. For a hosted server this is **Firebase Realtime Database** (Google). The bridge only reads there, and what it reads is a number that changes: no page content, no workflow, no account data. (The widget in Claude listens the same way for a run you are watching, and is told the run's status and each step's state by its id.) A server you run yourself can carry the signals itself, and then there is no second destination.
+- If the server is set to keep runs itself, the bridge sends the screenshot, page HTML and requests of each step with the step's result instead of saving them. The server chooses this, per run; ask its operator. Runs in the server's cloud browser don't involve the bridge at all.
+- **Nothing else.** The page inspector (`chrome-devtools-mcp`) runs on your computer, talks only to your Chrome, and runs with usage statistics turned off.
 
 Pages a workflow opens load in Chrome as they would if you visited them yourself.
 
@@ -51,15 +76,31 @@ Pages a workflow opens load in Chrome as they would if you visited them yourself
 | **Bridge token** | Links the bridge to your account. Create it in the Account view (ask Claude to "show my browser-workflow account"). Stored in your system's secure credential store |
 | **Server** | The Browser Workflow server's address. Leave the default unless you run your own server |
 | **Allowed sites** | Only let workflows open these sites, separated by commas. `*` (the default) allows any site |
+| **Data folder** | Where your runs are saved on this computer. Empty (the default) means `~/.browser-workflow` |
 
 ## Protocol
 
-JSON messages over the WebSocket the bridge opens (protocol version 1):
+**HTTP (protocol version 3, `src/rest.js`).** Every request carries the bridge token as a Bearer token.
+
+| Call | Purpose |
+|---|---|
+| `POST /session` `{ protocol, bridgeVersion, platform }` | Register. Answers `{ session, account, accountId, browser, signalUrl }`. One bridge per account: a new one replaces the old |
+| `GET /work?session=` | After a signal: `{ start, stop, resume }` (run ids), `settle` (runs the server ended while this bridge was away: how, to note on the record here), `asks` (`{ id, name, args }`: a record or a file to read back, a browser check), `browser` |
+| `POST /runs/<id>/next` `{ session, seq, result, state }` | The result of command `seq` (0 the first time), and the `state` from the last answer. Answers `{ seq, command: { name, args } }`, `{ seq, wait: { untilMs } }` (a manual step) or `{ seq, done }`, with `save` (the record's header and the steps that changed, written to the run's folder) and the next `state`. Repeating a call is safe |
+| `POST /runs/<id>/settled` `{ session }` | The bridge noted how a run in `settle` ended |
+| `POST /answers/<id>` `{ session, ok, value \| error }` | The answer to one of `asks` |
+| `DELETE /session?session=` | The bridge is going away |
+
+The bridge listens on `signalUrl` with a plain streaming GET (`Accept: text/event-stream`). Each event means "ask `/work`"; a lost or repeated one changes nothing. `command.name` is one of the commands above, or `sleep` (a delay step: wait that many milliseconds).
+
+**WebSocket (protocol version 2, `src/connection.js`)**, for servers without the HTTP API. JSON messages over the WebSocket the bridge opens:
 
 - bridge → server: `hello { token, protocol, bridgeVersion, platform }`, `result { id, ok, value | error }`, `pong`
-- server → bridge: `welcome { account }`, `rejected { code, message }`, `command { id, name, args }`, `config { browser }`, `ping`
+- server → bridge: `welcome { account, accountId }`, `rejected { code, message }`, `command { id, name, args }`, `config { browser }`, `ping`
 
-`name` is one of the commands above, and `args` are its arguments in order.
+`name` is one of the commands above, and `args` are its arguments in order. For `store`, `args` is an operation and its arguments: `listRuns`, `getRun`, `readAsset`, `getItems`, `getApiCalls`, `unfinishedRuns`, `usage` (reads), and `saveRun`, `appendItems`, `deleteRun`, `deleteRunsOf`, `stopRun` (writes). They are carried out one at a time, in the order they arrive.
+
+`src/driver.js`, `src/inspector.js` and `src/store.js` are generated from the server's code, so a run behaves and is saved the same on both sides; the rest is written here.
 
 ## Development
 
@@ -88,6 +129,8 @@ npm test
 ```bash
 npm run validate
 ```
+
+Two settings shorten the bridge's timers for tests (the server's end-to-end suite uses them): `BW_MAX_RUN_MS`, the longest a run's tab stays open (default and at most 60 minutes), and `BW_MAX_BACKOFF_MS`, the longest wait between two attempts to reconnect (default 30 seconds).
 
 ## License
 

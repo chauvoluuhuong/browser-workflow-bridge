@@ -10,8 +10,9 @@ function fakeDriver() {
   const d = {
     calls,
     open: async (...a) => { calls.push(['open', ...a]); return { ok: true, url: 'about:blank' }; },
-    navigate: async (...a) => { calls.push(['navigate', ...a]); return { ok: true }; },
-    act: async (...a) => { calls.push(['act', ...a]); return { ok: true }; },
+    // Like the real driver: with an `after` option, the page state comes back in the same result.
+    navigate: async (...a) => { calls.push(['navigate', ...a]); return { ok: true, ...(a[3] ? { after: await d.capture() } : {}) }; },
+    act: async (...a) => { calls.push(['act', ...a]); return { ok: true, ...(a[2] ? { after: await d.capture() } : {}) }; },
     evaluate: async (...a) => { calls.push(['evaluate', ...a]); return { ok: true, output: 1 }; },
     capture: async () => ({ consoleErrors: [], html: 'x'.repeat(MAX_HTML + 10) }),
     takeApiCalls: async () => [{ url: 'https://example.com/api' }],
@@ -78,6 +79,48 @@ test('closes a run that passed the time limit', async (t) => {
   const r = await x.execute('navigate', ['r1', 'https://example.com', 1000]);
   assert.match(r.error.raw, /minute limit/);
   assert.deepEqual(d.calls.at(-1), ['close', 'r1']);
+});
+
+test('returns the page state with the action, with its HTML capped', async () => {
+  const d = fakeDriver();
+  const x = createExecutor(d);
+  await x.execute('open', ['r1', { mode: 'launch' }]);
+  const after = { screenshotQuality: 55, html: true, apiCalls: true };
+  const nav = await x.execute('navigate', ['r1', 'https://example.com', 1000, after]);
+  assert.deepEqual(d.calls.at(-1), ['navigate', 'r1', 'https://example.com', 1000, after]);
+  assert.match(nav.after.html, /truncated by the bridge/);
+  assert.ok(Buffer.byteLength(nav.after.html) <= MAX_HTML + 40);
+  const act = await x.execute('act', ['r1', { command: 'click', xpath: '//a', timeoutMs: 100 }, after]);
+  assert.match(act.after.html, /truncated by the bridge/);
+  // Without `after` nothing extra is taken.
+  assert.equal((await x.execute('act', ['r1', { command: 'click', xpath: '//a', timeoutMs: 100 }])).after, undefined);
+});
+
+test('uses the server\'s time limit for a run, never more than its own', async (t) => {
+  const d = fakeDriver();
+  const x = createExecutor(d);
+  const now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  await x.execute('open', ['short', { mode: 'launch', maxRunMs: 60_000 }]);
+  await x.execute('open', ['long', { mode: 'launch', maxRunMs: MAX_RUN_MS * 10 }]);
+  Date.now.mock.mockImplementation(() => now + 61_000);
+  assert.match((await x.execute('act', ['short', { command: 'click', xpath: '//a', timeoutMs: 100 }])).error.raw, /1-minute limit/);
+  assert.equal((await x.execute('act', ['long', { command: 'click', xpath: '//a', timeoutMs: 100 }])).ok, true);
+  Date.now.mock.mockImplementation(() => now + MAX_RUN_MS + 1);
+  await x.sweep();
+  assert.equal(x.openRuns(), 0);
+});
+
+test('a shorter limit of its own caps every run (BW_MAX_RUN_MS, for tests)', async (t) => {
+  const x = createExecutor(fakeDriver(), { maxRunMs: 2000 });
+  assert.equal(x.maxRunMs, 2000);
+  assert.equal(createExecutor(fakeDriver(), { maxRunMs: MAX_RUN_MS * 2 }).maxRunMs, MAX_RUN_MS);
+  const now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  await x.execute('open', ['r1', { mode: 'launch', maxRunMs: 60_000 }]);
+  Date.now.mock.mockImplementation(() => now + 2001);
+  await x.sweep();
+  assert.equal(x.openRuns(), 0);
 });
 
 test('rejects unknown commands', async () => {

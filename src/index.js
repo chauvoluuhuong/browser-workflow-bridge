@@ -4,21 +4,29 @@
 // XPath, evaluate, capture, close) in the user's Chrome. It holds no workflow logic: the server decides
 // every step. To Claude it offers bridge_status and the page_* inspector tools.
 // Env (set by the plugin from userConfig):
-//   BW_SERVER_URL      the server's base URL (https://…); the bridge connects to <server>/bridge
+//   BW_SERVER_URL      the server's base URL (https://…)
 //   BW_BRIDGE_TOKEN    links the bridge to the user's account; never logged or returned
 //   BW_ALLOWED_SITES   optional: only open these sites (comma-separated host names)
+//   BW_DATA_DIR        optional: where runs are saved on this computer (default ~/.browser-workflow)
 // Development and tests: BW_NO_INSPECTOR=1 skips the page_* tools; BW_CHROME_PATH launches that
-// executable; BW_LAUNCH_DEBUG_PORT sets the DevTools port of launched Chrome (default 9333).
+// executable; BW_LAUNCH_DEBUG_PORT sets the DevTools port of launched Chrome (default 9333);
+// BW_MAX_RUN_MS is the longest a run's tab stays open (default and at most 60 minutes);
+// BW_MAX_BACKOFF_MS is the longest wait between two attempts to reconnect (default 30 seconds).
+// BW_BRIDGE_TRANSPORT picks how the bridge talks to the server: `rest` (HTTP requests and signals, no
+// connection held open: src/rest.js), `ws` (one WebSocket: src/connection.js), or by default `auto`:
+// HTTP when the server offers it, otherwise the WebSocket.
 // `node src/index.js --standalone` runs only the connection (no MCP), for a terminal or a dev script.
 import { fromJsonSchema, McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
-import { createExecutor, MAX_OPEN, MAX_RUN_MS, parseSites } from './commands.js';
+import { createExecutor, MAX_OPEN, parseSites } from './commands.js';
 import { bridgeUrl, Connection } from './connection.js';
+import { RestConnection } from './rest.js';
 import { LocalDriver } from './driver.js';
 import { Inspector } from './inspector.js';
+import { createStorage, dataDir } from './storage.js';
 
-const VERSION = '0.2.0';
+const VERSION = '0.4.0';
 
 // stdout is the MCP channel: keep every log on stderr.
 console.log = (...a) => console.error(...a);
@@ -33,15 +41,24 @@ const driver = new LocalDriver({
   executablePath: process.env.BW_CHROME_PATH || undefined,
   launchDebugPort: Number(process.env.BW_LAUNCH_DEBUG_PORT) || undefined,
 });
-const executor = createExecutor(driver, { allowedSites, log });
+const storage = createStorage({ baseDir: dataDir(process.env.BW_DATA_DIR) });
+const executor = createExecutor(driver, { allowedSites, log, storage, maxRunMs: Number(process.env.BW_MAX_RUN_MS) || undefined });
 const standalone = process.argv.includes('--standalone');
 const inspector = process.env.BW_NO_INSPECTOR || standalone ? undefined : new Inspector(browser, log);
 
-const connection = new Connection({
-  url: bridgeUrl(server),
+const transport = (process.env.BW_BRIDGE_TRANSPORT || 'auto').toLowerCase();
+const handlers = {
   token,
   version: VERSION,
   execute: executor.execute,
+  // The server says which account this is; its runs are saved in that account's folder.
+  onWelcome: (m) => {
+    try {
+      log(`runs are saved in ${storage.use(m.accountId ?? 'default')}`);
+    } catch (e) {
+      log(`no data folder: ${e?.message ?? e}`);
+    }
+  },
   onConfig: (b) => {
     browser = b;
     void inspector?.configure(b);
@@ -49,9 +66,23 @@ const connection = new Connection({
   // Close every tab this bridge opened when the server goes away: nothing runs without it.
   onDisconnect: () => { void executor.closeAll(); },
   log,
+  maxBackoffMs: Number(process.env.BW_MAX_BACKOFF_MS) || undefined,
+};
+const overWebSocket = () => new Connection({ url: bridgeUrl(server), ...handlers });
+let connection = transport === 'ws' ? overWebSocket() : new RestConnection({
+  server,
+  ...handlers,
+  // A server without the HTTP API (an older one): use its WebSocket, unless told to use HTTP only.
+  onUnsupported: () => {
+    if (transport === 'rest') return log(`${server} has no HTTP bridge API (BW_BRIDGE_TRANSPORT=rest)`);
+    log('this server has no HTTP bridge API: using its WebSocket');
+    connection = overWebSocket();
+    connection.start();
+  },
 });
 connection.start();
-setInterval(() => void executor.sweep(), 60_000).unref();
+// Every minute, or sooner when the limit itself is shorter (tests).
+setInterval(() => void executor.sweep(), Math.min(60_000, Math.max(250, executor.maxRunMs / 2))).unref();
 
 const STATES = {
   not_configured: 'not set up: add the bridge token in the plugin settings',
@@ -60,6 +91,7 @@ const STATES = {
   disconnected: 'disconnected, retrying',
   paused: 'paused (ask to resume the bridge to reconnect)',
   rejected: 'refused by the server',
+  unsupported: 'this server has no HTTP bridge API',
 };
 
 function statusText() {
@@ -68,11 +100,12 @@ function statusText() {
     `Browser Workflow bridge ${VERSION}`,
     `Server: ${server}`,
     `Token: ${token ? 'set' : 'not set (add it in the plugin settings)'}`,
-    `Connection: ${STATES[c.state] ?? c.state}${c.state === 'connected' ? ` as ${c.account} since ${c.connectedAt}` : ''}`,
+    `Connection: ${STATES[c.state] ?? c.state}${c.state === 'connected' ? ` as ${c.account} since ${c.connectedAt}` : ''}${c instanceof RestConnection ? ' (HTTP, no connection held open)' : ' (WebSocket)'}`,
     c.lastError && c.state !== 'connected' ? `Last error: ${c.lastError}` : '',
     `Browser mode: ${browser.mode}${browser.cdpEndpoint ? ` (${browser.cdpEndpoint})` : ''}`,
-    `Open runs: ${executor.openRuns()} (at most ${MAX_OPEN}; each closes after ${MAX_RUN_MS / 60000} minutes)`,
+    `Open runs: ${executor.openRuns()} (at most ${MAX_OPEN}; each closes after ${Math.round(executor.maxRunMs / 6000) / 10} minutes)`,
     `Allowed sites: ${allowedSites.length ? allowedSites.join(', ') : 'any'}`,
+    `Runs saved in: ${storage.location() ?? `${dataDir(process.env.BW_DATA_DIR)} (once connected)`}`,
   ].filter(Boolean).join('\n');
 }
 

@@ -1,8 +1,8 @@
 {
   "name": "browser-workflow-bridge",
   "displayName": "Browser Workflow Bridge",
-  "version": "0.2.0",
-  "description": "Runs your Browser Workflow automations in your own Chrome, and connects Claude to the Browser Workflow server. The bridge holds no workflow logic: it carries out the server's browser commands in tabs it opens.",
+  "version": "0.4.0",
+  "description": "Runs your Browser Workflow automations in your own Chrome and keeps their results on your computer, and connects Claude to the Browser Workflow server. The bridge holds no workflow logic: it carries out the server's browser commands in tabs it opens.",
   "author": {
     "name": "chauvoluuhuong"
   },
@@ -31,6 +31,12 @@
       "title": "Allowed sites",
       "description": "Only let workflows open these sites, separated by commas (for example: example.com, shop.example.org). * allows any site.",
       "default": "*"
+    },
+    "data_dir": {
+      "type": "string",
+      "title": "Data folder",
+      "description": "Where your runs are saved on this computer: screenshots, page HTML and extracted data. Leave empty for ~/.browser-workflow.",
+      "default": ""
     }
   }
 }

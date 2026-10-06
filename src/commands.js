@@ -2,8 +2,11 @@
 // does; these rules limit what it can make this browser do, even if the server were compromised:
 //   - it only acts on tabs this bridge opened for a run, never the user's other tabs or windows;
 //   - it only opens http and https pages, and only the allowed sites when the user set any;
-//   - a run's tab closes after MAX_RUN_MS, and at most MAX_OPEN runs are open at once;
-//   - page HTML sent back is capped at MAX_HTML.
+//   - a run's tab closes after its time limit (the server's, at most MAX_RUN_MS), and at most
+//     MAX_OPEN runs are open at once (`maxRunMs` shortens the limit in tests);
+//   - page HTML sent back is capped at MAX_HTML bytes;
+//   - when the server asks to keep a run on this computer (`save`), what a command captured is saved
+//     in the run's folder and only file names go back (src/storage.js).
 
 export const MAX_RUN_MS = 60 * 60 * 1000;
 export const MAX_OPEN = 3;
@@ -33,13 +36,24 @@ export function refuseUrl(url, sites) {
 
 const refused = (type, raw, target) => ({ ok: false, error: { type, raw, ...(target ? { target } : {}) } });
 
+/** Cuts a capture's HTML to MAX_HTML bytes (the captures of `capture` and of a command's `after`). */
+function capHtml(cap) {
+  if (cap && typeof cap.html === 'string' && Buffer.byteLength(cap.html) > MAX_HTML) {
+    cap.html = `${Buffer.from(cap.html).subarray(0, MAX_HTML).toString().replace(/\uFFFD$/, '')}<!-- truncated by the bridge -->`;
+  }
+  return cap;
+}
+
 /**
  * Returns execute(name, args), which runs one command on `driver` (a LocalDriver), plus helpers to
  * close every tab this bridge opened.
  */
-export function createExecutor(driver, { allowedSites = [], log = () => {} } = {}) {
-  /** runId → when its tab was opened */
+export function createExecutor(driver, { allowedSites = [], log = () => {}, storage, maxRunMs = MAX_RUN_MS } = {}) {
+  /** The longest any run's tab stays open here, whatever the server asks for. */
+  const cap = Number.isFinite(maxRunMs) && maxRunMs > 0 ? Math.min(maxRunMs, MAX_RUN_MS) : MAX_RUN_MS;
+  /** runId → when its tab was opened, and how long it may stay open */
   const opened = new Map();
+  const expired = (run) => Date.now() - run.at > run.maxMs;
 
   async function closeRun(runId) {
     opened.delete(runId);
@@ -48,14 +62,33 @@ export function createExecutor(driver, { allowedSites = [], log = () => {} } = {
 
   /** Returns a refusal when `runId` has no tab from this bridge or ran too long. */
   async function checkRun(runId) {
-    const at = opened.get(runId);
-    if (at === undefined) return refused('unknown_error', `Run ${runId} has no tab opened by this bridge.`);
-    if (Date.now() - at > MAX_RUN_MS) {
+    const run = opened.get(runId);
+    if (!run) return refused('unknown_error', `Run ${runId} has no tab opened by this bridge.`);
+    if (expired(run)) {
+      const minutes = Math.round(run.maxMs / 6000) / 10;
       await closeRun(runId);
-      log(`closed run ${runId}: it passed the ${MAX_RUN_MS / 60000}-minute limit`);
-      return refused('browser_unavailable', `The run passed the bridge's ${MAX_RUN_MS / 60000}-minute limit, so its tab was closed.`);
+      log(`closed run ${runId}: it passed its ${minutes}-minute limit`);
+      return refused('browser_unavailable', `The run passed its ${minutes}-minute limit, so the bridge closed its tab.`);
     }
     return undefined;
+  }
+
+  /**
+   * Finishes an action's result: caps the HTML, and with `save` keeps what was captured in the run's
+   * folder. If saving fails, the step fails and the captured content is dropped, never sent.
+   */
+  async function finish(runId, after, r) {
+    if (!r?.after) return r;
+    capHtml(r.after);
+    if (!after?.save) return r;
+    try {
+      if (!storage) throw new Error('this bridge has no data folder');
+      await storage.saveCapture(runId, after.save, r.after, after.save.items && r.ok ? r.output ?? null : undefined);
+      return r;
+    } catch (e) {
+      log(`could not save run ${runId}: ${e?.message ?? e}`);
+      return refused('unknown_error', `Couldn't save on your computer: ${e?.message ?? e}`, 'local_save');
+    }
   }
 
   async function execute(name, args) {
@@ -69,28 +102,39 @@ export function createExecutor(driver, { allowedSites = [], log = () => {} } = {
           const why = refuseUrl(o.startUrl, allowedSites);
           if (why) return refused('navigation_error', why, o.startUrl);
         }
-        opened.set(runId, Date.now());
+        // The server sends the run's time limit; the bridge never keeps a tab longer than its own.
+        const maxMs = Number.isFinite(o.maxRunMs) && o.maxRunMs > 0 ? Math.min(o.maxRunMs, cap) : cap;
+        opened.set(runId, { at: Date.now(), maxMs });
         return driver.open(runId, o);
       }
       case 'navigate': {
-        const [runId, url, timeoutMs] = a;
+        const [runId, url, timeoutMs, after] = a;
         const no = await checkRun(runId);
         if (no) return no;
         const why = refuseUrl(url, allowedSites);
         if (why) return refused('navigation_error', why, url);
-        return driver.navigate(runId, url, timeoutMs);
+        return finish(runId, after, await driver.navigate(runId, url, timeoutMs, after));
       }
       case 'act':
       case 'evaluate': {
         const no = await checkRun(a[0]);
         if (no) return no;
-        return driver[name](...a);
+        // `after`: the page state to return with the result (act's 3rd argument, evaluate's 4th).
+        return finish(a[0], name === 'act' ? a[2] : a[3], await driver[name](...a));
       }
       case 'capture': {
         if (!opened.has(a[0])) return { consoleErrors: [] };
-        const cap = await driver.capture(a[0], a[1] ?? {});
-        if (typeof cap.html === 'string' && cap.html.length > MAX_HTML) cap.html = `${cap.html.slice(0, MAX_HTML)}<!-- truncated by the bridge -->`;
+        const o = a[1] ?? {};
+        const cap = capHtml(await driver.capture(a[0], o));
+        if (o.save) {
+          if (!storage) throw new Error('this bridge has no data folder');
+          await storage.saveCapture(a[0], o.save, cap);
+        }
         return cap;
+      }
+      case 'store': {
+        if (!storage) throw new Error('this bridge has no data folder');
+        return storage.run(a[0], a.slice(1));
       }
       case 'takeApiCalls':
         return opened.has(a[0]) ? driver.takeApiCalls(a[0]) : [];
@@ -107,9 +151,10 @@ export function createExecutor(driver, { allowedSites = [], log = () => {} } = {
   return {
     execute,
     openRuns: () => opened.size,
+    maxRunMs: cap,
     /** Closes runs past the time limit; call every minute. */
     async sweep() {
-      for (const [runId, at] of opened) if (Date.now() - at > MAX_RUN_MS) await closeRun(runId);
+      for (const [runId, run] of opened) if (expired(run)) await closeRun(runId);
     },
     async closeAll() {
       await Promise.all([...opened.keys()].map(closeRun));

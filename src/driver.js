@@ -10,6 +10,8 @@ import { chromium } from 'playwright-core';
 const SECRET_HEADERS = /^(authorization|proxy-authorization|cookie|x-api-key|x-auth-token|x-csrf-token|x-xsrf-token)$/i;
 const MAX_API_CALLS = 500;
 const MAX_BODY = 64 * 1024;
+/** Request bodies kept between two takes: they travel to the server in one message. */
+const MAX_API_BYTES = 1024 * 1024;
 export function apiCallOf(r) {
   const h = Object.fromEntries(Object.entries(r.headers()).map(([k, v]) => [k, SECRET_HEADERS.test(k) ? '[redacted]' : v]));
   const body = r.postData();
@@ -162,19 +164,36 @@ export class LocalDriver {
     page.on('console', (m) => { if (m.type() === 'error')
       push(m.text()); });
     page.on('pageerror', (e) => push(e.message));
-    const apiCalls = [];
+    const session = { page, owned, consoleErrors, apiCalls: [], apiBytes: 0 };
     // Same filter as the crawler: only fetch/XHR, not documents, scripts or images.
     page.on('request', (r) => {
       const type = r.resourceType();
-      if ((type === 'fetch' || type === 'xhr') && apiCalls.length < MAX_API_CALLS)
-        apiCalls.push(apiCallOf(r));
+      if ((type !== 'fetch' && type !== 'xhr') || session.apiCalls.length >= MAX_API_CALLS)
+        return;
+      const call = apiCallOf(r);
+      session.apiBytes += call.requestBody?.length ?? 0;
+      if (session.apiBytes > MAX_API_BYTES && call.requestBody)
+        call.requestBody = '(left out: too much request data in this step)';
+      session.apiCalls.push(call);
     });
-    this.sessions.set(runId, { page, owned, consoleErrors, apiCalls });
+    this.sessions.set(runId, session);
     if (o.startUrl)
-      return this.navigate(runId, o.startUrl, o.timeoutMs ?? 30_000);
+      return this.goto(runId, o.startUrl, o.timeoutMs ?? 30_000);
     return { ok: true, url: page.url() };
   }
-  async navigate(runId, url, timeoutMs) {
+  /** Adds what `after` asks for to an action's result (the page as the action left it). */
+  async withAfter(runId, r, after) {
+    if (!after)
+      return r;
+    const { excerptOnFailure, ...o } = after;
+    if (!r.ok && excerptOnFailure)
+      o.excerptAround = r.error?.type === 'cant_get_web_element_xpath' ? r.error.target ?? '' : '';
+    return { ...r, after: await this.capture(runId, o) };
+  }
+  async navigate(runId, url, timeoutMs, after) {
+    return this.withAfter(runId, await this.goto(runId, url, timeoutMs), after);
+  }
+  async goto(runId, url, timeoutMs) {
     const { page } = this.session(runId);
     try {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
@@ -184,7 +203,10 @@ export class LocalDriver {
       return { ok: false, url: page.url(), error: { ...classify(err, 'navigation_error'), target: url, timeoutMs } };
     }
   }
-  async act(runId, a) {
+  async act(runId, a, after) {
+    return this.withAfter(runId, await this.actOn(runId, a), after);
+  }
+  async actOn(runId, a) {
     const { page } = this.session(runId);
     const loc = page.locator(`xpath=${a.xpath}`).first();
     const timeout = a.timeoutMs;
@@ -241,7 +263,10 @@ export class LocalDriver {
       };
     }
   }
-  async evaluate(runId, code, arg) {
+  async evaluate(runId, code, arg, after) {
+    return this.withAfter(runId, await this.run(runId, code, arg), after);
+  }
+  async run(runId, code, arg) {
     const { page } = this.session(runId);
     try {
       // Evaluated through DevTools, so it also works on pages whose CSP forbids eval.
@@ -275,11 +300,16 @@ export class LocalDriver {
       }
       catch { /* ignore */ }
     }
+    if (o.apiCalls)
+      out.apiCalls = await this.takeApiCalls(runId);
     return out;
   }
   async takeApiCalls(runId) {
     const s = this.sessions.get(runId);
-    return s ? s.apiCalls.splice(0) : [];
+    if (!s)
+      return [];
+    s.apiBytes = 0;
+    return s.apiCalls.splice(0);
   }
   async close(runId) {
     const s = this.sessions.get(runId);
