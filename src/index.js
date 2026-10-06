@@ -12,19 +12,16 @@
 // executable; BW_LAUNCH_DEBUG_PORT sets the DevTools port of launched Chrome (default 9333);
 // BW_MAX_RUN_MS is the longest a run's tab stays open (default and at most 60 minutes);
 // BW_MAX_BACKOFF_MS is the longest wait between two attempts to reconnect (default 30 seconds).
-// BW_BRIDGE_TRANSPORT picks how the bridge talks to the server: `rest` (HTTP requests and signals, no
-// connection held open: src/rest.js), `ws` (one WebSocket: src/connection.js), or by default `auto`:
-// HTTP when the server offers it, otherwise the WebSocket.
+// The bridge talks to the server with HTTP requests and holds no connection open to it (src/rest.js).
 // `node src/index.js --standalone` runs only the connection (no MCP), for a terminal or a dev script.
 import { fromJsonSchema, McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 import { createExecutor, MAX_OPEN, parseSites } from './commands.js';
-import { bridgeUrl, Connection } from './connection.js';
 import { RestConnection } from './rest.js';
 import { LocalDriver } from './driver.js';
 import { Inspector } from './inspector.js';
-import { createStorage, dataDir } from './storage.js';
+import { bridgeId, createStorage, dataDir } from './storage.js';
 
 const VERSION = '0.4.0';
 
@@ -46,9 +43,10 @@ const executor = createExecutor(driver, { allowedSites, log, storage, maxRunMs: 
 const standalone = process.argv.includes('--standalone');
 const inspector = process.env.BW_NO_INSPECTOR || standalone ? undefined : new Inspector(browser, log);
 
-const transport = (process.env.BW_BRIDGE_TRANSPORT || 'auto').toLowerCase();
-const handlers = {
+const connection = new RestConnection({
+  server,
   token,
+  instance: bridgeId(dataDir(process.env.BW_DATA_DIR)),
   version: VERSION,
   execute: executor.execute,
   // The server says which account this is; its runs are saved in that account's folder.
@@ -67,18 +65,6 @@ const handlers = {
   onDisconnect: () => { void executor.closeAll(); },
   log,
   maxBackoffMs: Number(process.env.BW_MAX_BACKOFF_MS) || undefined,
-};
-const overWebSocket = () => new Connection({ url: bridgeUrl(server), ...handlers });
-let connection = transport === 'ws' ? overWebSocket() : new RestConnection({
-  server,
-  ...handlers,
-  // A server without the HTTP API (an older one): use its WebSocket, unless told to use HTTP only.
-  onUnsupported: () => {
-    if (transport === 'rest') return log(`${server} has no HTTP bridge API (BW_BRIDGE_TRANSPORT=rest)`);
-    log('this server has no HTTP bridge API: using its WebSocket');
-    connection = overWebSocket();
-    connection.start();
-  },
 });
 connection.start();
 // Every minute, or sooner when the limit itself is shorter (tests).
@@ -91,7 +77,6 @@ const STATES = {
   disconnected: 'disconnected, retrying',
   paused: 'paused (ask to resume the bridge to reconnect)',
   rejected: 'refused by the server',
-  unsupported: 'this server has no HTTP bridge API',
 };
 
 function statusText() {
@@ -100,7 +85,7 @@ function statusText() {
     `Browser Workflow bridge ${VERSION}`,
     `Server: ${server}`,
     `Token: ${token ? 'set' : 'not set (add it in the plugin settings)'}`,
-    `Connection: ${STATES[c.state] ?? c.state}${c.state === 'connected' ? ` as ${c.account} since ${c.connectedAt}` : ''}${c instanceof RestConnection ? ' (HTTP, no connection held open)' : ' (WebSocket)'}`,
+    `Connection: ${STATES[c.state] ?? c.state}${c.state === 'connected' ? ` as ${c.account} since ${c.connectedAt}` : ''}`,
     c.lastError && c.state !== 'connected' ? `Last error: ${c.lastError}` : '',
     `Browser mode: ${browser.mode}${browser.cdpEndpoint ? ` (${browser.cdpEndpoint})` : ''}`,
     `Open runs: ${executor.openRuns()} (at most ${MAX_OPEN}; each closes after ${Math.round(executor.maxRunMs / 6000) / 10} minutes)`,
@@ -110,7 +95,7 @@ function statusText() {
 }
 
 async function shutdown() {
-  connection.stop();
+  await connection.stop();
   await executor.closeAll();
   await driver.dispose().catch(() => {});
   await inspector?.close();

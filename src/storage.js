@@ -5,6 +5,8 @@
 // Claude or the widget asks for a run (the `store` command).
 // The store itself (src/store.js) is generated from the server's file store, so the folder has the
 // same layout as the server's. It holds no workflow logic: it saves and loads by run id.
+import { randomBytes } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { LocalFsStore } from './store.js';
@@ -19,6 +21,25 @@ export function dataDir(value) {
   const v = String(value ?? '').trim();
   if (!v) return path.join(os.homedir(), '.browser-workflow');
   return path.resolve(v.startsWith('~') ? path.join(os.homedir(), v.slice(1)) : v);
+}
+
+/**
+ * A name for this bridge that stays the same for this data folder, kept in `<folder>/bridge-id`. The
+ * server uses it to tell "the same bridge, started again" (which gets the notes about runs it left
+ * unfinished) from another computer. It identifies nothing else: 16 random bytes.
+ */
+export function bridgeId(baseDir) {
+  const file = path.join(baseDir, 'bridge-id');
+  try {
+    const id = readFileSync(file, 'utf8').trim();
+    if (/^[0-9a-f]{32}$/.test(id)) return id;
+  } catch { /* first start */ }
+  const id = randomBytes(16).toString('hex');
+  try {
+    mkdirSync(baseDir, { recursive: true });
+    writeFileSync(file, `${id}\n`);
+  } catch { /* a folder that can't be written: the name lasts this process */ }
+  return id;
 }
 
 export function createStorage({ baseDir }) {

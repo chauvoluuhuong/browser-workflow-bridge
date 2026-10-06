@@ -3,7 +3,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createExecutor, MAX_HTML, MAX_OPEN, MAX_RUN_MS, parseSites, refuseUrl } from '../src/commands.js';
-import { bridgeUrl } from '../src/connection.js';
 
 function fakeDriver() {
   const calls = [];
@@ -21,12 +20,6 @@ function fakeDriver() {
   };
   return d;
 }
-
-test('server URLs become the bridge endpoint', () => {
-  assert.equal(bridgeUrl('https://app.example.com'), 'wss://app.example.com/bridge');
-  assert.equal(bridgeUrl('http://127.0.0.1:3310/'), 'ws://127.0.0.1:3310/bridge');
-  assert.equal(bridgeUrl('ws://127.0.0.1:3310/bridge'), 'ws://127.0.0.1:3310/bridge');
-});
 
 test('only http(s) pages, and only allowed sites when set', () => {
   const sites = parseSites(' Example.com, *.shop.org ');

@@ -57,14 +57,14 @@ The last 20 runs of each workflow are kept; older ones are deleted when a new ru
 
 ## What it sends, and where
 
-- **The Browser Workflow server** (the **Server** setting, `https://…`): the bridge sends HTTPS requests to `<Server>/api/bridge/v1` and holds no connection open to it. An older server only has a WebSocket at `<Server>/bridge`; the bridge uses that when the server offers nothing else. Claude's connector entry talks to `<Server>/mcp`. For a run it sends:
+- **The Browser Workflow server** (the **Server** setting, `https://…`): the bridge sends HTTPS requests to `<Server>/api/bridge/v1` and holds no connection open to it. Claude's connector entry talks to `<Server>/mcp`. For a run it sends:
   - each step's result (page URL, the value your step's code returned, or the error), because the server decides the next step from it;
   - console errors, and for a failed step the HTML near the element it was looking for (at most 8 KB), so the failure can be explained;
   - the names of the files it saved, not their content;
   - what you or Claude ask to see of a past run: a step's screenshot, its extracted data or its requests. This is read from the folder above and sent when asked for, for example when Claude looks at a failed step to fix the workflow. The server passes it on and does not keep it.
-  - With the HTTP API, the bridge also sends back, unchanged, a signed note the server gave it with the previous step (the run's inputs, its variables and its latest two steps): the server keeps nothing of a run between two steps, so it needs this to decide the next one. The run's record itself is saved here, by the bridge, as each step is answered.
-- **A signal channel** (with the HTTP API): the address the server gives the bridge to listen on, so the bridge knows when to ask for work without a connection to the server. For a hosted server this is **Firebase Realtime Database** (Google). The bridge only reads there, and what it reads is a number that changes: no page content, no workflow, no account data. (The widget in Claude listens the same way for a run you are watching, and is told the run's status and each step's state by its id.) A server you run yourself can carry the signals itself, and then there is no second destination.
-- If the server is set to keep runs itself, the bridge sends the screenshot, page HTML and requests of each step with the step's result instead of saving them. The server chooses this, per run; ask its operator. Runs in the server's cloud browser don't involve the bridge at all.
+  - The bridge also sends back, unchanged, a signed note the server gave it with the previous step (the run's inputs, its variables and its latest two steps): the server keeps nothing of a run between two steps, so it needs this to decide the next one. The run's record itself is saved here, by the bridge, as each step is answered.
+- **A signal channel:** the address the server gives the bridge to listen on, so the bridge knows when to ask for work without a connection to the server. For a hosted server this is **Firebase Realtime Database** (Google). The bridge only reads there, and what it reads is a number that changes: no page content, no workflow, no account data. (The widget in Claude listens the same way for a run you are watching, and is told the run's status and each step's state by its id.) A server you run yourself can carry the signals itself, and then there is no second destination.
+- Runs in the server's cloud browser don't involve the bridge at all.
 - **Nothing else.** The page inspector (`chrome-devtools-mcp`) runs on your computer, talks only to your Chrome, and runs with usage statistics turned off.
 
 Pages a workflow opens load in Chrome as they would if you visited them yourself.
@@ -80,7 +80,7 @@ Pages a workflow opens load in Chrome as they would if you visited them yourself
 
 ## Protocol
 
-**HTTP (protocol version 3, `src/rest.js`).** Every request carries the bridge token as a Bearer token.
+HTTP, protocol version 3 (`src/rest.js`). Every request carries the bridge token as a Bearer token.
 
 | Call | Purpose |
 |---|---|
@@ -93,12 +93,7 @@ Pages a workflow opens load in Chrome as they would if you visited them yourself
 
 The bridge listens on `signalUrl` with a plain streaming GET (`Accept: text/event-stream`). Each event means "ask `/work`"; a lost or repeated one changes nothing. `command.name` is one of the commands above, or `sleep` (a delay step: wait that many milliseconds).
 
-**WebSocket (protocol version 2, `src/connection.js`)**, for servers without the HTTP API. JSON messages over the WebSocket the bridge opens:
-
-- bridge → server: `hello { token, protocol, bridgeVersion, platform }`, `result { id, ok, value | error }`, `pong`
-- server → bridge: `welcome { account, accountId }`, `rejected { code, message }`, `command { id, name, args }`, `config { browser }`, `ping`
-
-`name` is one of the commands above, and `args` are its arguments in order. For `store`, `args` is an operation and its arguments: `listRuns`, `getRun`, `readAsset`, `getItems`, `getApiCalls`, `unfinishedRuns`, `usage` (reads), and `saveRun`, `appendItems`, `deleteRun`, `deleteRunsOf`, `stopRun` (writes). They are carried out one at a time, in the order they arrive.
+For `store` questions, `args` is an operation and its arguments: `listRuns`, `getRun`, `readAsset`, `getItems`, `getApiCalls`, `usage` (reads), and `saveRun`, `deleteRun`, `deleteRunsOf`, `endRun` (writes). They are carried out one at a time, in the order they arrive.
 
 `src/driver.js`, `src/inspector.js` and `src/store.js` are generated from the server's code, so a run behaves and is saved the same on both sides; the rest is written here.
 

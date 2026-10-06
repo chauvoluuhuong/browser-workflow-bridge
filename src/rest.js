@@ -11,29 +11,54 @@
 //      the steps that changed), which the bridge writes to the run's folder, and a signed `state`,
 //      which the bridge sends back unchanged with its next request. The server keeps neither.
 // Every request carries the bridge token. The shapes are listed in the README.
+import { randomBytes } from 'node:crypto';
 import os from 'node:os';
-import { describe, MAX_RESULT, outcome } from './connection.js';
 
 export const PROTOCOL = 3;
+/** The server accepts a request of at most 8 MB; a step's result stays well under it. */
+export const MAX_RESULT = 6 * 1024 * 1024;
 const API = '/api/bridge/v1';
 const MAX_BACKOFF = 30_000;
 /** Firebase sends a keep-alive every 30 s; a stream this quiet is dead. */
 const STREAM_SILENT = 75_000;
-/** How long a run keeps trying to reach the server before the bridge gives it up and closes its tab. */
-const NEXT_GIVE_UP = 2 * 60_000;
+/** How long a run keeps trying to reach the server before the bridge gives it up and closes its tab (BW_NEXT_GIVE_UP_MS in tests). */
+const NEXT_GIVE_UP = Number(process.env.BW_NEXT_GIVE_UP_MS) > 0 ? Number(process.env.BW_NEXT_GIVE_UP_MS) : 2 * 60_000;
 const DEBUG = !!process.env.BW_DEBUG;
 const time = () => new Date().toISOString().slice(11, 23);
 const sleep = (ms) => new Promise((r) => { setTimeout(r, ms).unref?.(); });
 
+// BW_DEBUG=1 logs each command and its answer (typed values only by length: they can be passwords).
+function describe(name, args = []) {
+  const [a0, a1] = args;
+  if (name === 'open') return `${a0} mode=${a1?.mode}${a1?.startUrl ? ` ${a1.startUrl}` : ''}`;
+  if (name === 'navigate') return `${a0} ${a1}`;
+  if (name === 'act') return `${a0} ${a1?.command} ${a1?.xpath}${a1?.value ? ` value=(${String(a1.value).length} chars)` : ''}`;
+  if (name === 'evaluate') return `${a0} ${String(a1).replace(/\s+/g, ' ').slice(0, 60)}`;
+  if (name === 'check') return `mode=${a0}`;
+  if (name === 'store') return `${a0} ${typeof a1 === 'string' ? a1 : a1?.runId ?? ''}`;
+  return String(a0 ?? '');
+}
+
+function outcome(v) {
+  if (v == null) return 'ok';
+  // A file read back for the server (base64), or a count.
+  if (typeof v !== 'object') return typeof v === 'string' ? `${v.length} chars` : String(v);
+  if (Array.isArray(v)) return `${v.length} items`;
+  if (typeof v.ok === 'boolean') return v.ok ? 'ok' : `error ${v.error?.type}: ${String(v.error?.raw ?? '').slice(0, 100)}`;
+  if ('consoleErrors' in v) return [v.screenshot && 'screenshot', v.html && 'html', v.domExcerpt && 'excerpt'].filter(Boolean).join('+') || 'nothing';
+  if ('runner' in v) return v.code;
+  return 'ok';
+}
+
+
 export class RestConnection {
   /**
    * @param {{
-   *   server: string, token: string, version: string,
+   *   server: string, token: string, version: string, instance?: string,
    *   execute(name: string, args: unknown[]): Promise<unknown>,
    *   onWelcome?(welcome: { account: string, accountId?: string }): void,
    *   onConfig?(browser: object): void,
    *   onDisconnect?(): void,
-   *   onUnsupported?(): void,
    *   log?(message: string): void,
    *   maxBackoffMs?: number,
    * }} opts
@@ -43,9 +68,16 @@ export class RestConnection {
     this.base = `${String(opts.server).replace(/\/+$/, '')}${API}`;
     this.log = opts.log ?? (() => {});
     this.maxBackoff = opts.maxBackoffMs > 0 ? opts.maxBackoffMs : MAX_BACKOFF;
-    /** not_configured | connecting | connected | disconnected | paused | rejected | unsupported */
+    /** not_configured | connecting | connected | disconnected | paused | rejected */
     this.state = opts.token ? 'disconnected' : 'not_configured';
     this.attempt = 0;
+    /**
+     * Names this bridge to the server: registering again keeps the same session and its runs. The
+     * caller passes one that stays the same for this computer's data folder; else it lasts the process.
+     */
+    this.instance = /^[0-9a-f]{32}$/.test(opts.instance ?? '') ? opts.instance : randomBytes(16).toString('hex');
+    /** Records that could not be written to disk, kept while this process lives so the run can still be read. */
+    this.unsaved = new Map();
     this.session = undefined;
     this.account = undefined;
     this.connectedAt = undefined;
@@ -91,18 +123,13 @@ export class RestConnection {
     this.state = 'connecting';
     let r;
     try {
-      r = await this.api('POST', '/session', { protocol: PROTOCOL, bridgeVersion: this.opts.version, platform: `${os.platform()} ${os.arch()}` });
+      r = await this.api('POST', '/session', { protocol: PROTOCOL, bridgeVersion: this.opts.version, platform: `${os.platform()} ${os.arch()}`, instance: this.instance });
     } catch {
       this.lastError = `Could not reach ${this.opts.server}`;
       this.state = 'disconnected';
       return this.retry();
     }
     if (this.stopped || this.state === 'paused') return;
-    if (r.status === 404) {
-      // An older server: it only has the WebSocket.
-      this.state = 'unsupported';
-      return this.opts.onUnsupported?.();
-    }
     if (r.status === 401 || r.status === 426) return this.refused(r.json.message ?? 'The server refused this bridge.');
     if (r.status !== 200 || !r.json.session) {
       this.lastError = r.json.message ?? `The server answered ${r.status}`;
@@ -129,6 +156,12 @@ export class RestConnection {
     this.stream?.abort();
     this.log(`the server refused this bridge: ${message}`);
     this.opts.onDisconnect?.();
+    this.wakeAll();
+  }
+
+  /** Runs waiting in a delay or for the user stop waiting: they have nobody to report to. */
+  wakeAll() {
+    for (const run of this.runs.values()) run.wake?.();
   }
 
   /** Listens for signals: each one means "ask the server for work". Reconnects by itself until told to stop. */
@@ -187,17 +220,21 @@ export class RestConnection {
         let r;
         try {
           r = await this.api('GET', `/work?session=${encodeURIComponent(this.session)}`);
+          this.workAttempt = 0;
         } catch {
-          break; // unreachable right now: the next signal, or the stream reconnecting, asks again
+          // Unreachable right now. A signal only says "ask", so the question must not be lost: ask again soon.
+          const delay = Math.min(this.maxBackoff, 500 * 2 ** Math.min(this.workAttempt ?? 0, 6));
+          this.workAttempt = (this.workAttempt ?? 0) + 1;
+          setTimeout(() => void this.checkWork(), delay).unref?.();
+          break;
         }
         if (r.status === 401) { this.refused(r.json.message ?? 'The bridge token is no longer valid.'); break; }
         if (r.status === 409) {
-          // Signed out by the server (it thought this bridge was gone): register again.
+          // Signed out by the server (it thought this bridge was gone): register again, as the same
+          // bridge, and go on with the runs in progress.
           // Replaced by another bridge: stay out of its way.
-          this.session = undefined;
           this.stream?.abort();
-          this.opts.onDisconnect?.();
-          if (r.json.code === 'signed_out') { this.state = 'disconnected'; void this.register(); } else this.refused(r.json.message ?? 'Another bridge took over.');
+          if (r.json.code === 'signed_out') { this.state = 'disconnected'; void this.register(); } else { this.session = undefined; this.refused(r.json.message ?? 'Another bridge took over.'); }
           break;
         }
         if (r.status !== 200) break;
@@ -237,6 +274,11 @@ export class RestConnection {
   async answer(a) {
     // A record the server just sent may still be on its way to disk: read after it.
     if (a.name === 'store' && this.applying.size) await Promise.allSettled([...this.applying]);
+    // A run this computer could not save is answered from memory.
+    if (a.name === 'store' && a.args?.[0] === 'getRun' && this.unsaved.has(a.args[1])) {
+      await this.api('POST', `/answers/${encodeURIComponent(a.id)}`, { session: this.session, ok: true, value: this.unsaved.get(a.args[1]) }).catch(() => {});
+      return;
+    }
     const t0 = Date.now();
     if (DEBUG) console.error(`${time()} [bridge] ? ${a.name} ${describe(a.name, a.args)}`);
     let body;
@@ -261,7 +303,19 @@ export class RestConnection {
       for (;;) {
         const asked = this.next(runId, seq, result, state).then(async (out) => {
           // The record as it is now: saved here, on this computer, before anything else happens.
-          if (out?.save) await this.opts.execute('store', ['saveRun', out.save.header, out.save.executions ?? [], out.save.keepRuns]).catch((e) => this.log(`could not save run ${runId}: ${e?.message ?? e}`));
+          if (out?.save) {
+            await this.opts.execute('store', ['saveRun', out.save.header, out.save.executions ?? [], out.save.keepRuns]).catch((e) => {
+              this.log(`could not save run ${runId}: ${e?.message ?? e}`);
+              // Kept in memory instead, so the run can still be shown while this bridge is running.
+              const old = this.unsaved.get(runId)?.executions ?? [];
+              for (const x of out.save.executions ?? []) {
+                const i = old.findIndex((y) => y.id === x.id);
+                if (i >= 0) old[i] = x; else old.push(x);
+              }
+              this.unsaved.set(runId, { ...out.save.header, executions: old });
+              for (const id of [...this.unsaved.keys()].slice(0, Math.max(0, this.unsaved.size - 20))) this.unsaved.delete(id);
+            });
+          }
           return out;
         });
         this.applying.add(asked);
@@ -280,6 +334,8 @@ export class RestConnection {
     } finally {
       this.runs.delete(runId);
       await this.opts.execute('close', [runId]).catch(() => {});
+      // The server may have ended the run without this bridge, and left a note about it.
+      void this.checkWork();
     }
   }
 
@@ -299,12 +355,17 @@ export class RestConnection {
         if (res.status === 200) return await res.json();
         if (res.status === 401 || res.status === 409) {
           const j = await res.json().catch(() => ({}));
+          if (j.code === 'signed_out') {
+            // The server gave this bridge up for a moment: register again (the same session), then go on.
+            await this.register();
+            continue;
+          }
           this.log(`run ${runId} was taken from this bridge: ${j.message ?? res.status}`);
           return undefined;
         }
       } catch { /* unreachable: try again */ }
       if (Date.now() - started > NEXT_GIVE_UP) {
-        this.log(`run ${runId}: the server could not be reached for ${NEXT_GIVE_UP / 60_000} minutes; closing its tab`);
+        this.log(`run ${runId}: the server could not be reached for ${Math.round(NEXT_GIVE_UP / 1000)} s; closing its tab`);
         return undefined;
       }
       await sleep(Math.min(this.maxBackoff, 500 * 2 ** Math.min(attempt, 6)));
@@ -339,19 +400,24 @@ export class RestConnection {
     });
   }
 
-  signOff() {
+  /** Tells the server this bridge is going away, so it knows at once. Waits 2 s for it at most. */
+  async signOff() {
     const s = this.session;
     this.session = undefined;
     this.stream?.abort();
-    if (s) void this.api('DELETE', `/session?session=${encodeURIComponent(s)}`).catch(() => {});
+    if (!s) return;
+    await fetch(`${this.base}/session?session=${encodeURIComponent(s)}`, {
+      method: 'DELETE', headers: { authorization: `Bearer ${this.opts.token}` }, signal: AbortSignal.timeout(2000),
+    }).catch(() => {});
   }
 
   pause() {
     clearTimeout(this.timer);
     this.state = 'paused';
     this.account = undefined;
-    this.signOff();
+    void this.signOff();
     this.opts.onDisconnect?.();
+    this.wakeAll();
   }
 
   resume() {
@@ -360,9 +426,9 @@ export class RestConnection {
     void this.register();
   }
 
-  stop() {
+  async stop() {
     this.stopped = true;
     clearTimeout(this.timer);
-    this.signOff();
+    await this.signOff();
   }
 }
