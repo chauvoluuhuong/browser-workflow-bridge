@@ -53,6 +53,8 @@ Runs made in your own Chrome are saved by the bridge, not by the server. Each ru
 | `items.json` | The data your workflow extracted |
 | `apicalls.json` | The fetch/XHR requests the pages made, with `Authorization`, `Cookie` and similar headers replaced by `[redacted]` |
 
+The data folder also has `bridge.log`: what the bridge did, for finding out what went wrong (it registered, each command it carried out and how it ended, with page addresses and XPaths; values typed into pages only by their length, and no page content). It is kept under 2 MB, stays on your computer, and is yours to read or delete. `bridge-id` holds a random name the server uses to recognise this bridge after a restart.
+
 The last 20 runs of each workflow are kept; older ones are deleted when a new run starts. Nothing else is deleted for you. They are plain files: you can open or delete them yourself. `bridge_status` shows where the folder is.
 
 ## What it sends, and where

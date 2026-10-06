@@ -23,11 +23,9 @@ const MAX_BACKOFF = 30_000;
 const STREAM_SILENT = 75_000;
 /** How long a run keeps trying to reach the server before the bridge gives it up and closes its tab (BW_NEXT_GIVE_UP_MS in tests). */
 const NEXT_GIVE_UP = Number(process.env.BW_NEXT_GIVE_UP_MS) > 0 ? Number(process.env.BW_NEXT_GIVE_UP_MS) : 2 * 60_000;
-const DEBUG = !!process.env.BW_DEBUG;
-const time = () => new Date().toISOString().slice(11, 23);
 const sleep = (ms) => new Promise((r) => { setTimeout(r, ms).unref?.(); });
 
-// BW_DEBUG=1 logs each command and its answer (typed values only by length: they can be passwords).
+// How a command and its answer are written in the log (typed values only by length: they can be passwords).
 function describe(name, args = []) {
   const [a0, a1] = args;
   if (name === 'open') return `${a0} mode=${a1?.mode}${a1?.startUrl ? ` ${a1.startUrl}` : ''}`;
@@ -60,6 +58,7 @@ export class RestConnection {
    *   onConfig?(browser: object): void,
    *   onDisconnect?(): void,
    *   log?(message: string): void,
+   *   debug?(message: string): void,
    *   maxBackoffMs?: number,
    * }} opts
    */
@@ -67,6 +66,8 @@ export class RestConnection {
     this.opts = opts;
     this.base = `${String(opts.server).replace(/\/+$/, '')}${API}`;
     this.log = opts.log ?? (() => {});
+    /** Each command and its answer, each time the server is asked for work (typed values only by length). */
+    this.debug = opts.debug ?? (() => {});
     this.maxBackoff = opts.maxBackoffMs > 0 ? opts.maxBackoffMs : MAX_BACKOFF;
     /** not_configured | connecting | connected | disconnected | paused | rejected */
     this.state = opts.token ? 'disconnected' : 'not_configured';
@@ -198,7 +199,7 @@ export class RestConnection {
           }
           throw new Error('the signal stream ended');
         } catch (e) {
-          if (!mine.over && DEBUG) console.error(`${time()} [bridge] ${e?.message ?? e}; listening again`);
+          if (!mine.over) this.debug(`${e?.message ?? e}; listening again`);
         } finally {
           clearInterval(watchdog);
         }
@@ -239,6 +240,8 @@ export class RestConnection {
         }
         if (r.status !== 200) break;
         const w = r.json;
+        const todo = [w.start?.length && `start ${w.start.join(', ')}`, w.stop?.length && `stop ${w.stop.join(', ')}`, w.resume?.length && `resume ${w.resume.join(', ')}`, w.settle?.length && `note the end of ${w.settle.map((x) => x.runId).join(', ')}`, w.asks?.length && `${w.asks.length} question(s)`].filter(Boolean);
+        if (todo.length) this.debug(`work: ${todo.join('; ')}`);
         if (w.browser) this.opts.onConfig?.(w.browser);
         for (const id of w.stop ?? []) {
           // Closing the tab makes a command in progress return now; a delay or a manual wait is woken.
@@ -280,12 +283,12 @@ export class RestConnection {
       return;
     }
     const t0 = Date.now();
-    if (DEBUG) console.error(`${time()} [bridge] ? ${a.name} ${describe(a.name, a.args)}`);
+    this.debug(`? ${a.name} ${describe(a.name, a.args)}`);
     let body;
     try {
       const value = await this.opts.execute(a.name, a.args);
       body = { session: this.session, ok: true, value: value ?? null };
-      if (DEBUG) console.error(`${time()} [bridge] → ${a.name} ${outcome(value)} ${Date.now() - t0}ms`);
+      this.debug(`→ ${a.name} ${outcome(value)} ${Date.now() - t0}ms`);
     } catch (e) {
       body = { session: this.session, ok: false, error: e?.message ?? String(e) };
     }
@@ -374,17 +377,17 @@ export class RestConnection {
 
   async carryOut(run, c) {
     const t0 = Date.now();
-    if (DEBUG) console.error(`${time()} [bridge] ← ${c.name} ${describe(c.name, c.args)}`);
+    this.debug(`← ${c.name} ${describe(c.name, c.args)}`);
     if (c.name === 'sleep') {
       await this.pause_(run, Number(c.args?.[0]) || 0);
       return null;
     }
     try {
       const value = await this.opts.execute(c.name, c.args);
-      if (DEBUG) console.error(`${time()} [bridge] → ${c.name} ${outcome(value)} ${Date.now() - t0}ms`);
+      this.debug(`→ ${c.name} ${outcome(value)} ${Date.now() - t0}ms`);
       return value ?? null;
     } catch (e) {
-      if (DEBUG) console.error(`${time()} [bridge] → ${c.name} threw: ${e?.message ?? e}`);
+      this.debug(`→ ${c.name} threw: ${e?.message ?? e}`);
       // capture and takeApiCalls answer with data, not a result: nothing is the honest answer.
       if (c.name === 'capture' || c.name === 'takeApiCalls' || c.name === 'close') return null;
       return { ok: false, error: { type: 'unknown_error', raw: e?.message ?? String(e) } };

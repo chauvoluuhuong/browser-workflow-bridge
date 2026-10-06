@@ -7,7 +7,8 @@
 //   BW_SERVER_URL      the server's base URL (https://…)
 //   BW_BRIDGE_TOKEN    links the bridge to the user's account; never logged or returned
 //   BW_ALLOWED_SITES   optional: only open these sites (comma-separated host names)
-//   BW_DATA_DIR        optional: where runs are saved on this computer (default ~/.browser-workflow)
+//   BW_DATA_DIR        optional: where runs are saved on this computer (default ~/.browser-workflow);
+//                      the bridge's log, bridge.log, is there too
 // Development and tests: BW_NO_INSPECTOR=1 skips the page_* tools; BW_CHROME_PATH launches that
 // executable; BW_LAUNCH_DEBUG_PORT sets the DevTools port of launched Chrome (default 9333);
 // BW_MAX_RUN_MS is the longest a run's tab stays open (default and at most 60 minutes);
@@ -18,6 +19,7 @@ import { fromJsonSchema, McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 import { createExecutor, MAX_OPEN, parseSites } from './commands.js';
+import { createLog } from './log.js';
 import { RestConnection } from './rest.js';
 import { LocalDriver } from './driver.js';
 import { Inspector } from './inspector.js';
@@ -25,9 +27,10 @@ import { bridgeId, createStorage, dataDir } from './storage.js';
 
 const VERSION = '0.4.0';
 
-// stdout is the MCP channel: keep every log on stderr.
+// stdout is the MCP channel: keep every log on stderr. The same lines, and every command, also go to
+// `bridge.log` in the data folder (src/log.js).
 console.log = (...a) => console.error(...a);
-const log = (m) => console.error(`[bridge] ${m}`);
+const { log, debug, file: logFile } = createLog(dataDir(process.env.BW_DATA_DIR));
 
 const server = process.env.BW_SERVER_URL || 'http://127.0.0.1:3310';
 const token = process.env.BW_BRIDGE_TOKEN || '';
@@ -64,6 +67,7 @@ const connection = new RestConnection({
   // Close every tab this bridge opened when the server goes away: nothing runs without it.
   onDisconnect: () => { void executor.closeAll(); },
   log,
+  debug,
   maxBackoffMs: Number(process.env.BW_MAX_BACKOFF_MS) || undefined,
 });
 connection.start();
@@ -91,6 +95,7 @@ function statusText() {
     `Open runs: ${executor.openRuns()} (at most ${MAX_OPEN}; each closes after ${Math.round(executor.maxRunMs / 6000) / 10} minutes)`,
     `Allowed sites: ${allowedSites.length ? allowedSites.join(', ') : 'any'}`,
     `Runs saved in: ${storage.location() ?? `${dataDir(process.env.BW_DATA_DIR)} (once connected)`}`,
+    `Log: ${logFile}`,
   ].filter(Boolean).join('\n');
 }
 
