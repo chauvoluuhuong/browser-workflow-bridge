@@ -6,6 +6,8 @@ The server decides every step of a workflow. This bridge is a small local progra
 
 ## Install
 
+The same steps, with copy buttons and in Vietnamese: [browser-workflow.web.app](https://browser-workflow.web.app).
+
 You need [Claude Code](https://claude.com/claude-code) and [Node.js](https://nodejs.org) 22 or newer (the LTS installer is enough). The same two commands work on macOS, Windows and Linux.
 
 **Inside Claude Code** (the terminal, or the Code tab of the desktop app), type these one after the other:
