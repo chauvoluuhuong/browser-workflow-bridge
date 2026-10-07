@@ -1,7 +1,7 @@
 {
   "name": "browser-workflow-bridge",
   "displayName": "Browser Workflow Bridge",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Runs your Browser Workflow automations in your own Chrome and keeps their results on your computer, and connects Claude to the Browser Workflow server. The bridge holds no workflow logic: it carries out the server's browser commands in tabs it opens.",
   "author": {
     "name": "chauvoluuhuong"
@@ -18,9 +18,10 @@
   "userConfig": {
     "token": {
       "type": "string",
-      "title": "Bridge token",
-      "description": "Links this bridge to your Browser Workflow account. Ask Claude to \"show my browser-workflow account\" and click \"New bridge token\".",
-      "sensitive": true
+      "title": "Bridge token (optional)",
+      "description": "Normally empty: the first time, Claude links this computer to your account with one button. Only paste a token here if you were given one.",
+      "sensitive": true,
+      "required": false
     },
     "server_url": {
       "type": "string",

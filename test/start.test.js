@@ -60,12 +60,12 @@ test('a copy without node_modules installs them into the data folder, then answe
   const data = mkdtempSync(path.join(os.tmpdir(), 'bw-data-'));
   t.after(() => { rmSync(dir, { recursive: true, force: true }); rmSync(data, { recursive: true, force: true }); });
   const text = await status(dir, { CLAUDE_PLUGIN_DATA: data });
-  assert.match(text, /Connection: not set up: no bridge token yet/);
+  assert.match(text, /Connection: not linked to an account yet/);
   assert.match(text, /What to do next:/);
   assert.ok(lstatSync(path.join(dir, 'node_modules')).isSymbolicLink());
   assert.ok(existsSync(path.join(depsDir(data), 'node_modules', 'playwright-core', 'package.json')));
   // A second start finds them and installs nothing.
-  assert.match(await status(dir, { CLAUDE_PLUGIN_DATA: data }), /Connection: not set up/);
+  assert.match(await status(dir, { CLAUDE_PLUGIN_DATA: data }), /Connection: not linked to an account yet/);
 });
 
 test('when the install can\'t be done, bridge_status says why and what the user needs', { timeout: 60_000 }, async (t) => {

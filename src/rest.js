@@ -57,6 +57,7 @@ export class RestConnection {
    *   onWelcome?(welcome: { account: string, accountId?: string }): void,
    *   onConfig?(browser: object): void,
    *   onDisconnect?(): void,
+   *   onBadToken?(): void,
    *   log?(message: string): void,
    *   debug?(message: string): void,
    *   maxBackoffMs?: number,
@@ -98,6 +99,15 @@ export class RestConnection {
     if (this.opts.token) void this.register();
   }
 
+  /** The token arrived after the bridge started (pairing): connect with it. */
+  setToken(token) {
+    this.opts.token = token;
+    this.attempt = 0;
+    this.lastError = undefined;
+    this.state = token ? 'disconnected' : 'not_configured';
+    this.start();
+  }
+
   async api(method, path, body) {
     const res = await fetch(`${this.base}${path}`, {
       method,
@@ -131,7 +141,7 @@ export class RestConnection {
       return this.retry();
     }
     if (this.stopped || this.state === 'paused') return;
-    if (r.status === 401 || r.status === 426) return this.refused(r.json.message ?? 'The server refused this bridge.');
+    if (r.status === 401 || r.status === 426) return this.refused(r.json.message ?? 'The server refused this bridge.', r.status === 401);
     if (r.status !== 200 || !r.json.session) {
       this.lastError = r.json.message ?? `The server answered ${r.status}`;
       this.state = 'disconnected';
@@ -149,8 +159,8 @@ export class RestConnection {
     this.listen(r.json.signalUrl);
   }
 
-  /** A wrong token, an old bridge or another bridge that took over won't fix itself. */
-  refused(message) {
+  /** A wrong token, an old bridge or another bridge that took over won't fix itself. `badToken`: the token itself is not known (any more). */
+  refused(message, badToken = false) {
     this.state = 'rejected';
     this.lastError = message;
     this.session = undefined;
@@ -158,6 +168,7 @@ export class RestConnection {
     this.log(`the server refused this bridge: ${message}`);
     this.opts.onDisconnect?.();
     this.wakeAll();
+    if (badToken) this.opts.onBadToken?.();
   }
 
   /** Runs waiting in a delay or for the user stop waiting: they have nobody to report to. */
@@ -229,7 +240,7 @@ export class RestConnection {
           setTimeout(() => void this.checkWork(), delay).unref?.();
           break;
         }
-        if (r.status === 401) { this.refused(r.json.message ?? 'The bridge token is no longer valid.'); break; }
+        if (r.status === 401) { this.refused(r.json.message ?? 'The bridge token is no longer valid.', true); break; }
         if (r.status === 409) {
           // Signed out by the server (it thought this bridge was gone): register again, as the same
           // bridge, and go on with the runs in progress.

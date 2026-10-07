@@ -6,11 +6,17 @@ The server decides every step of a workflow. This bridge is a small local progra
 
 ## Install
 
-The same steps, with copy buttons and in Vietnamese: [browser-workflow.web.app](https://browser-workflow.web.app).
+Most people never open this page: the Browser Workflow connector tells them what to install, and when. The steps are the same as on [browser-workflow.web.app](https://browser-workflow.web.app) (with copy buttons, and in Vietnamese).
 
-You need [Claude Code](https://claude.com/claude-code) and [Node.js](https://nodejs.org) 22 or newer (the LTS installer is enough). The same two commands work on macOS, Windows and Linux.
+### In the Claude desktop app (macOS, Windows)
 
-**Inside Claude Code** (the terminal, or the Code tab of the desktop app), type these one after the other:
+1. Add the connector: **Settings → Connectors → Add custom connector**, address `https://browser-workflow-294054962898.us-central1.run.app/mcp`. Click **Continue** on the page that opens.
+2. Ask Claude for a workflow. The first time one runs, Claude says it needs the app on your computer. Download [browser-workflow.mcpb](https://github.com/chauvoluuhuong/browser-workflow-bridge/releases/latest/download/browser-workflow.mcpb), open it (double-click), and click **Install** when Claude asks. You need Google Chrome; the Claude app brings everything else.
+3. Click **Link this computer** in the chat. Nothing to copy or paste: the app shows a pairing code, Claude passes it to the connector, and your click confirms it. This happens once per computer.
+
+### In Claude Code (macOS, Windows, Linux)
+
+You need [Node.js](https://nodejs.org) 22 or newer. Inside Claude Code (the terminal, or the Code tab of the desktop app), type these one after the other:
 
 ```text
 /plugin marketplace add chauvoluuhuong/browser-workflow-bridge
@@ -20,26 +26,11 @@ You need [Claude Code](https://claude.com/claude-code) and [Node.js](https://nod
 /plugin install browser-workflow-bridge@browser-workflow
 ```
 
-**Or from a terminal.** macOS and Linux (Terminal), and Windows (Command Prompt or PowerShell):
+or from a terminal, the same with `claude plugin …` in place of `/plugin …`. The plugin includes the connector, so there is nothing else to add. Start a new Claude Code session and ask Claude to **"check the bridge status"**: it shows a pairing code and does the linking, and you click **Link this computer** in the chat. If the connector asks you to sign in, run `/mcp`, choose **browser-workflow**, then **Authenticate** (**Continue** is enough).
 
-```bash
-claude plugin marketplace add chauvoluuhuong/browser-workflow-bridge
-```
+The first start downloads the plugin's parts (about 50 MB, usually a few seconds). If it shows as failed in `/mcp` right after installing, wait a minute and reconnect it there.
 
-```bash
-claude plugin install browser-workflow-bridge@browser-workflow
-```
-
-Then start a new Claude Code session and ask Claude to **"check the bridge status"**. It tells you what is left to do. For a new user that is:
-
-1. Connect to Browser Workflow: run `/mcp`, choose **browser-workflow**, then **Authenticate**. On the page that opens, **Continue** is enough; you can create an account later.
-2. Ask Claude to "show my browser-workflow account", and click **New bridge token** in the view that appears. Copy the token.
-3. Run `/plugin configure browser-workflow-bridge` and paste it as **Bridge token**.
-4. Start a new session. "Check the bridge status" should now say **connected**.
-
-The first start downloads the bridge's parts (about 50 MB, usually a few seconds). If the bridge shows as failed in `/mcp` right after installing, wait a minute and reconnect it there.
-
-To update later: `/plugin marketplace update browser-workflow`. To remove: `/plugin uninstall browser-workflow-bridge@browser-workflow`.
+To update: `/plugin marketplace update browser-workflow`. To remove: `/plugin uninstall browser-workflow-bridge@browser-workflow`. To change the server or restrict sites later: `/plugin configure browser-workflow-bridge`.
 
 ## What the plugin adds
 
@@ -112,7 +103,7 @@ Pages a workflow opens load in Chrome as they would if you visited them yourself
 
 | Setting | What it's for |
 |---|---|
-| **Bridge token** | Links the bridge to your account. Create it in the Account view (ask Claude to "show my browser-workflow account", then **New bridge token**). Stored in your system's secure credential store |
+| **Bridge token** | Optional, normally empty: the first time, the bridge links itself by pairing (above) and keeps its token in `link.json` in the data folder, readable only by you. Paste a token here only if you were given one (the Account view makes them). Stored in your system's secure credential store |
 | **Server** | The Browser Workflow server's address. The default is the hosted server, `https://browser-workflow-294054962898.us-central1.run.app`. Change it only if you run your own server |
 | **Allowed sites** | Only let workflows open these sites, separated by commas. `*` (the default) allows any site |
 | **Data folder** | Where your runs are saved on this computer. Empty (the default) means `~/.browser-workflow` |
@@ -125,6 +116,8 @@ HTTP, protocol version 3 (`src/rest.js`). Every request carries the bridge token
 
 | Call | Purpose |
 |---|---|
+| `POST /pair` `{ protocol, bridgeVersion, platform, name }` (no token) | Ask for a pairing code. Answers `{ pairId, secret, code, expiresIn }`. The user confirms the code in Claude (`link_computer`, then a button) |
+| `GET /pair/<pairId>` with `Bearer <secret>` (no token) | Poll: `{ status: 'pending' }`, or once `{ status: 'linked', token, account }`. Unknown or expired: 404, and the app asks for a new code |
 | `POST /session` `{ protocol, bridgeVersion, platform }` | Register. Answers `{ session, account, accountId, browser, signalUrl }`. One bridge per account: a new one replaces the old |
 | `GET /work?session=` | After a signal: `{ start, stop, resume }` (run ids), `settle` (runs the server ended while this bridge was away: how, to note on the record here), `asks` (`{ id, name, args }`: a record or a file to read back, a browser check), `browser` |
 | `POST /runs/<id>/next` `{ session, seq, result, state }` | The result of command `seq` (0 the first time), and the `state` from the last answer. Answers `{ seq, command: { name, args } }`, `{ seq, wait: { untilMs } }` (a manual step) or `{ seq, done }`, with `save` (the record's header and the steps that changed, written to the run's folder) and the next `state`. Repeating a call is safe |
@@ -162,7 +155,11 @@ claude --plugin-dir .
 
 **How it starts.** Claude Code starts `src/start.js`. A copy installed from GitHub has no `node_modules`, so the first start runs `npm ci` into the plugin's data folder (`~/.claude/plugins/data/…`, kept across updates) and links it; a clone where you ran `npm install` is used as it is. Then it loads `src/index.js`, the bridge. If the install can't be done, it still answers Claude, and `bridge_status` says why.
 
-**What the bridge tells a user who isn't set up** is in `src/guide.js`: the steps `bridge_status` ends with when there is no token, when the server doesn't answer, or when the server refused the token.
+**Pairing** is `src/pairing.js`: with no token, the app asks the server for a code, shows it in `bridge_status`, and polls until the user's click on the server side hands it a token, which it saves in `link.json`. A saved token the server no longer knows is deleted and pairing starts again.
+
+**What the app tells a user who isn't set up** is in `src/guide.js`: the steps `bridge_status` ends with when it is not linked yet (with the code), when the server doesn't answer, or when the server refused this computer.
+
+**The file for the Claude desktop app** is built with `npm run build:app` (`dist/browser-workflow.mcpb`: the same code with its dependencies inside, from `mcpb/manifest.json`; `BW_BUILD_SERVER=http://127.0.0.1:3310` points it at a server on this computer). `npm run release` publishes it as a GitHub release, which the landing page's Download button points at (`releases/latest/download/browser-workflow.mcpb`). Both are run from the server repo with `npm run deploy:app`.
 
 Run the bridge's tests, and check both manifests before pushing:
 

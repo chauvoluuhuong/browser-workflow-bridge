@@ -5,7 +5,8 @@
 // every step. To Claude it offers bridge_status and the page_* inspector tools.
 // Env (set by the plugin from userConfig):
 //   BW_SERVER_URL      the server's base URL (default: the hosted server, PRODUCTION in guide.js)
-//   BW_BRIDGE_TOKEN    links the bridge to the user's account; never logged or returned
+//   BW_BRIDGE_TOKEN    optional: links the bridge to the user's account; never logged or returned. Without it the
+//                      bridge links itself by pairing (src/pairing.js) and keeps the token in link.json
 //   BW_ALLOWED_SITES   optional: only open these sites (comma-separated host names)
 //   BW_DATA_DIR        optional: where runs are saved on this computer (default ~/.browser-workflow);
 //                      the bridge's log, bridge.log, is there too
@@ -20,14 +21,15 @@ import { fromJsonSchema, McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 import { createExecutor, MAX_OPEN, parseSites } from './commands.js';
-import { CONNECTOR_HINT, INSTRUCTIONS, nextSteps, PRODUCTION, reachable } from './guide.js';
+import { connectorHint, INSTRUCTIONS, nextSteps, PRODUCTION, reachable } from './guide.js';
 import { createLog } from './log.js';
-import { RestConnection } from './rest.js';
+import { clearLink, Pairing, readLink, saveLink, usableToken } from './pairing.js';
+import { PROTOCOL, RestConnection } from './rest.js';
 import { LocalDriver } from './driver.js';
 import { Inspector } from './inspector.js';
 import { bridgeId, createStorage, dataDir } from './storage.js';
 
-const VERSION = '0.4.0';
+const VERSION = '0.5.0';
 
 // stdout is the MCP channel: keep every log on stderr. The same lines, and every command, also go to
 // `bridge.log` in the data folder (src/log.js).
@@ -35,7 +37,11 @@ console.log = (...a) => console.error(...a);
 const { log, debug, file: logFile } = createLog(dataDir(process.env.BW_DATA_DIR));
 
 const server = (process.env.BW_SERVER_URL || PRODUCTION).replace(/\/+$/, '');
-const token = process.env.BW_BRIDGE_TOKEN || '';
+const baseDir = dataDir(process.env.BW_DATA_DIR);
+// A token from the settings wins (an advanced setting; most computers are linked by pairing instead);
+// else the one pairing saved in the data folder.
+const settingToken = usableToken(process.env.BW_BRIDGE_TOKEN);
+let token = settingToken || readLink(baseDir, server);
 const allowedSites = parseSites(process.env.BW_ALLOWED_SITES);
 let browser = { mode: 'attach', headed: true };
 
@@ -68,16 +74,45 @@ const connection = new RestConnection({
   },
   // Close every tab this bridge opened when the server goes away: nothing runs without it.
   onDisconnect: () => { void executor.closeAll(); },
+  // The server doesn't know this token (a new one replaced it, or the account is gone): forget it and pair again.
+  onBadToken: () => {
+    if (settingToken) return;
+    log('the saved link is no longer valid; pairing again');
+    clearLink(baseDir);
+    token = '';
+    connection.setToken('');
+    pairing.start();
+  },
   log,
   debug,
   maxBackoffMs: Number(process.env.BW_MAX_BACKOFF_MS) || undefined,
 });
-connection.start();
+// No token yet: pair. Claude passes the code to the connector, the user clicks, and the token arrives.
+const pairing = new Pairing({
+  server,
+  version: VERSION,
+  protocol: PROTOCOL,
+  log,
+  debug,
+  maxBackoffMs: Number(process.env.BW_MAX_BACKOFF_MS) || undefined,
+  pollMs: Number(process.env.BW_PAIR_POLL_MS) || undefined,
+  onLinked: (t) => {
+    token = t;
+    try {
+      saveLink(baseDir, server, t);
+    } catch (e) {
+      log(`could not save the link in ${baseDir}: ${e?.message ?? e}; it lasts until this app stops`);
+    }
+    connection.setToken(t);
+  },
+});
+if (token) connection.start();
+else pairing.start();
 // Every minute, or sooner when the limit itself is shorter (tests).
 setInterval(() => void executor.sweep(), Math.min(60_000, Math.max(250, executor.maxRunMs / 2))).unref();
 
 const STATES = {
-  not_configured: 'not set up: no bridge token yet',
+  not_configured: 'not linked to an account yet',
   connecting: 'connecting…',
   connected: 'connected',
   disconnected: 'disconnected, retrying',
@@ -89,24 +124,25 @@ async function statusText() {
   const c = connection;
   // Not connected: say whether the server is there at all, since the steps depend on it.
   const serverUp = ['not_configured', 'connecting', 'disconnected'].includes(c.state) ? await reachable(server) : true;
-  const steps = nextSteps({ state: c.state, server, token: !!token, lastError: c.lastError, serverUp });
+  const steps = nextSteps({ state: c.state, server, token: !!token, lastError: c.lastError, serverUp, pairing });
   return [
-    `Browser Workflow bridge ${VERSION}`,
+    `Browser Workflow app ${VERSION}`,
     `Server: ${server}${serverUp ? '' : ' (not answering)'}`,
-    `Token: ${token ? 'set' : 'not set'}`,
+    `Token: ${token ? 'set' : 'not set (this computer links itself by pairing)'}`,
     `Connection: ${STATES[c.state] ?? c.state}${c.state === 'connected' ? ` as ${c.account} since ${c.connectedAt}` : ''}`,
     c.lastError && c.state !== 'connected' ? `Last error: ${c.lastError}` : undefined,
     `Browser mode: ${browser.mode}${browser.cdpEndpoint ? ` (${browser.cdpEndpoint})` : ''}`,
     `Open runs: ${executor.openRuns()} (at most ${MAX_OPEN}; each closes after ${Math.round(executor.maxRunMs / 6000) / 10} minutes)`,
     `Allowed sites: ${allowedSites.length ? allowedSites.join(', ') : 'any'}`,
-    `Runs saved in: ${storage.location() ?? `${dataDir(process.env.BW_DATA_DIR)} (once connected)`}`,
+    `Runs saved in: ${storage.location() ?? `${baseDir} (once connected)`}`,
     `Log: ${logFile}`,
     '',
-    ...(steps.length ? ['What to do next:', ...steps] : [CONNECTOR_HINT]),
+    ...(steps.length ? ['What to do next:', ...steps] : [connectorHint(server)]),
   ].filter((l) => l !== false && l !== undefined).join('\n').replace(/\n{3,}/g, '\n\n');
 }
 
 async function shutdown() {
+  pairing.stop();
   await connection.stop();
   await executor.closeAll();
   await driver.dispose().catch(() => {});
@@ -117,7 +153,7 @@ process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
 if (standalone) {
-  log(`standalone · server ${server}${token ? '' : ' · no token (set BW_BRIDGE_TOKEN)'}`);
+  log(`standalone · server ${server}${token ? '' : ' · no token yet: pairing'}`);
   setInterval(() => {}, 1 << 30); // stay up while reconnecting
 } else {
   await startMcp();

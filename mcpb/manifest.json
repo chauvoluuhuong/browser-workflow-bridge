@@ -1,0 +1,34 @@
+{
+  "manifest_version": "0.3",
+  "name": "browser-workflow",
+  "display_name": "Browser Workflow for Chrome",
+  "version": "__VERSION__",
+  "description": "Runs your Browser Workflow automations in your own Chrome, and keeps what they produce on your computer.",
+  "long_description": "Browser Workflow lets you describe a task on a website and have Claude build an automation for it. This extension is the part that runs on your computer: it opens the pages in Chrome, does what the workflow says, and saves the screenshots and collected data in a folder on your computer. It connects to the Browser Workflow connector you added in Claude; the first time, Claude links the two with one button.",
+  "author": { "name": "chauvoluuhuong", "url": "https://github.com/chauvoluuhuong" },
+  "homepage": "https://browser-workflow.web.app",
+  "documentation": "https://github.com/chauvoluuhuong/browser-workflow-bridge#readme",
+  "support": "https://github.com/chauvoluuhuong/browser-workflow-bridge/issues",
+  "repository": { "type": "git", "url": "https://github.com/chauvoluuhuong/browser-workflow-bridge" },
+  "license": "MIT",
+  "icon": "icon.png",
+  "keywords": ["browser", "automation", "chrome", "workflow"],
+  "server": {
+    "type": "node",
+    "entry_point": "src/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/src/index.js"],
+      "env": { "BW_SERVER_URL": "__SERVER__" }
+    }
+  },
+  "tools": [
+    { "name": "bridge_status", "description": "Shows whether this computer is linked to Browser Workflow and connected, and what to do when it is not." }
+  ],
+  "tools_generated": true,
+  "privacy_policies": ["https://browser-workflow.web.app/privacy"],
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": { "node": ">=20.0.0" }
+  }
+}
