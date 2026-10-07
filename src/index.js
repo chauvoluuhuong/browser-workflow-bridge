@@ -29,7 +29,7 @@ import { LocalDriver } from './driver.js';
 import { Inspector } from './inspector.js';
 import { bridgeId, createStorage, dataDir } from './storage.js';
 
-const VERSION = '0.5.0';
+const VERSION = '0.5.1';
 
 // stdout is the MCP channel: keep every log on stderr. The same lines, and every command, also go to
 // `bridge.log` in the data folder (src/log.js).
@@ -53,6 +53,11 @@ const storage = createStorage({ baseDir: dataDir(process.env.BW_DATA_DIR) });
 const executor = createExecutor(driver, { allowedSites, log, storage, maxRunMs: Number(process.env.BW_MAX_RUN_MS) || undefined });
 const standalone = process.argv.includes('--standalone');
 const inspector = process.env.BW_NO_INSPECTOR || standalone ? undefined : new Inspector(browser, log);
+// What bridge_status says about the page_* tools: how many there are, or why there are none.
+let inspectorState = inspector ? 'starting' : 'off';
+// The inspector runs inside this process (src/inspector.js), so a promise it leaves unhandled would end
+// the app with it. Its own start-up notes these and carries on; so does this.
+process.on('unhandledRejection', (reason) => log(`unhandled: ${reason?.stack ?? reason}`));
 
 const connection = new RestConnection({
   server,
@@ -132,6 +137,7 @@ async function statusText() {
     `Connection: ${STATES[c.state] ?? c.state}${c.state === 'connected' ? ` as ${c.account} since ${c.connectedAt}` : ''}`,
     c.lastError && c.state !== 'connected' ? `Last error: ${c.lastError}` : undefined,
     `Browser mode: ${browser.mode}${browser.cdpEndpoint ? ` (${browser.cdpEndpoint})` : ''}`,
+    `Page inspector: ${inspectorState}`,
     `Open runs: ${executor.openRuns()} (at most ${MAX_OPEN}; each closes after ${Math.round(executor.maxRunMs / 6000) / 10} minutes)`,
     `Allowed sites: ${allowedSites.length ? allowedSites.join(', ') : 'any'}`,
     `Runs saved in: ${storage.location() ?? `${baseDir} (once connected)`}`,
@@ -184,6 +190,7 @@ async function startMcp() {
 
   if (inspector) {
     try {
+      let count = 0;
       for (const t of await inspector.listTools()) {
         mcp.registerTool(
           `page_${t.name}`,
@@ -195,8 +202,11 @@ async function startMcp() {
           },
           async (args) => inspector.call(t.name, args ?? {}),
         );
+        count += 1;
       }
+      inspectorState = `ready (${count} page_* tools)`;
     } catch (e) {
+      inspectorState = `unavailable (${e?.message ?? e}). Workflows still run; the page_* tools are missing, so pages cannot be explored before a workflow is written.`;
       log(`page inspector unavailable: ${e?.message ?? e}`);
     }
   }
