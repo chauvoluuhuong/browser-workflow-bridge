@@ -1,10 +1,12 @@
-// Page inspector: runs the bundled chrome-devtools-mcp as a child process and re-exposes a curated set
-// of its tools as page_*, so Claude can explore pages in the same browser that runs workflows. The
-// child restarts with matching flags when the server sends new browser settings. Generated from the
-// Browser Workflow server's src/core/inspector.ts by its `npm run sync:bridge`.
+// Page inspector: runs the bundled chrome-devtools-mcp inside this process and re-exposes a curated
+// set of its tools as page_*, so Claude can explore pages in the same browser that runs workflows. It
+// is made again with matching flags when the server sends new browser settings. No second Node.js
+// process is started: the Node.js inside the Claude desktop app refuses to start one. Generated from
+// the Browser Workflow server's src/core/inspector.ts by its `npm run sync:bridge`.
 import { createRequire } from 'node:module';
-import { Client } from '@modelcontextprotocol/client';
-import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 /** chrome-devtools-mcp tools worth giving Claude for exploring pages and diagnosing failures. */
 export const CURATED = [
   'list_pages', 'select_page', 'new_page', 'navigate_page', 'take_snapshot', 'take_screenshot',
@@ -18,14 +20,41 @@ export function inspectorArgs(browser) {
   else if (browser.mode === 'cdp' && browser.cdpEndpoint) {
     args.push(browser.cdpEndpoint.startsWith('ws') ? '--wsEndpoint' : '--browserUrl', browser.cdpEndpoint);
   }
-  // launch: chrome-devtools-mcp starts its own Chrome (runs close their tab when done).
-  else if (browser.mode === 'launch' && browser.headed === false)
-    args.push('--headless');
+  // launch: chrome-devtools-mcp starts its own Chrome (runs close their tab when done), with a profile
+  // of its own that is removed afterwards: a profile shared between two of them lets only one start.
+  else if (browser.mode === 'launch')
+    args.push('--isolated', ...(browser.headed === false ? ['--headless'] : []));
   return args;
+}
+/**
+* chrome-devtools-mcp's own modules. It publishes no API for making its server with a browser we can
+* close again, so these are files inside the package, and its version is pinned in package.json.
+*/
+export async function devtools() {
+  const require = createRequire(import.meta.url);
+  const root = path.dirname(require.resolve('chrome-devtools-mcp/package.json'));
+  const load = (file) => import(pathToFileURL(path.join(root, 'build', 'src', file)).href);
+  // What its own start-up loads first: names that older Node.js versions lack.
+  await load('utils/polyfill.js');
+  const [{ McpServer }, { BrowserManager }, { parser }, { VERSION }] = await Promise.all([
+    load('index.js'), load('BrowserManager.js'), load('config/mcp-options.js'), load('version.js'),
+  ]);
+  return { McpServer, BrowserManager, parser, VERSION };
+}
+/** chrome-devtools-mcp's settings from its command-line flags. A flag it refuses is an error here, where its own start-up would end the process. */
+export function devtoolsArgs(d, flags) {
+  // Its parser skips the program's own leading arguments: two under Node.js, one inside a packaged
+  // Electron app, which is what the Claude desktop app's Node.js says it is.
+  const lead = process.versions.electron && !process.defaultApp ? 1 : 2;
+  return d.parser(d.VERSION, [...Array(lead).fill('chrome-devtools-mcp'), ...flags])
+    .exitProcess(false)
+    .fail((message, err) => { throw err ?? new Error(message); })
+    .parseSync();
 }
 export class Inspector {
   log;
   client;
+  server;
   starting;
   tools;
   browser;
@@ -33,28 +62,24 @@ export class Inspector {
     this.log = log;
     this.browser = browser;
   }
-  bin() {
-    const require = createRequire(import.meta.url);
-    const pkg = require.resolve('chrome-devtools-mcp/package.json');
-    return pkg.replace(/package\.json$/, 'build/src/bin/chrome-devtools-mcp.js');
-  }
   connect() {
     if (this.client)
       return Promise.resolve(this.client);
     this.starting ??= (async () => {
+      const d = await devtools();
+      const args = devtoolsArgs(d, inspectorArgs(this.browser));
+      const server = await d.McpServer.from(args, { browserManager: new d.BrowserManager(args, {}) });
+      const [near, far] = InMemoryTransport.createLinkedPair();
+      await server.server.connect(far);
       const client = new Client({ name: 'browser-workflow-bridge-inspector', version: '0.2.0' });
-      const transport = new StdioClientTransport({
-        command: process.execPath,
-        args: [this.bin(), ...inspectorArgs(this.browser)],
-        stderr: 'ignore',
-      });
-      await client.connect(transport);
+      await client.connect(near);
+      this.server = server;
       this.client = client;
       return client;
     })().finally(() => { this.starting = undefined; });
     return this.starting;
   }
-  /** The curated tools with the child's own schemas (so our proxies validate the same way). */
+  /** The curated tools with chrome-devtools-mcp's own schemas (so our proxies validate the same way). */
   async listTools() {
     // Schemas don't change between restarts of the same pinned version, so list once.
     this.tools ??= (async () => {
@@ -72,7 +97,7 @@ export class Inspector {
     await this.connect();
     return true;
   }
-  /** Restarts the child when the browser target changed. */
+  /** Makes the inspector again, at its next use, when the browser target changed. */
   async configure(browser) {
     const same = JSON.stringify(inspectorArgs(browser)) === JSON.stringify(inspectorArgs(this.browser));
     this.browser = browser;
@@ -81,9 +106,13 @@ export class Inspector {
     await this.close();
     this.log(`[inspector] restarting for browser mode "${browser.mode}"`);
   }
+  /** Also closes a Chrome the inspector started itself; a Chrome it connected to stays open. */
   async close() {
     const c = this.client;
+    const s = this.server;
     this.client = undefined;
+    this.server = undefined;
     await c?.close().catch(() => { });
+    await s?.close().catch(() => { });
   }
 }
