@@ -4,6 +4,41 @@ A Claude plugin that runs your Browser Workflow automations in your own Chrome, 
 
 The server decides every step of a workflow. This bridge is a small local program with no workflow logic: it connects to the server, carries out simple browser commands in tabs it opens, saves each run's screenshots, page HTML and data in a folder on your computer, and answers the server. It also gives Claude page-inspection tools for the same browser, so Claude can explore a site before writing or fixing a workflow.
 
+## Install
+
+You need [Claude Code](https://claude.com/claude-code) and [Node.js](https://nodejs.org) 22 or newer (the LTS installer is enough). The same two commands work on macOS, Windows and Linux.
+
+**Inside Claude Code** (the terminal, or the Code tab of the desktop app), type these one after the other:
+
+```text
+/plugin marketplace add chauvoluuhuong/browser-workflow-bridge
+```
+
+```text
+/plugin install browser-workflow-bridge@browser-workflow
+```
+
+**Or from a terminal.** macOS and Linux (Terminal), and Windows (Command Prompt or PowerShell):
+
+```bash
+claude plugin marketplace add chauvoluuhuong/browser-workflow-bridge
+```
+
+```bash
+claude plugin install browser-workflow-bridge@browser-workflow
+```
+
+Then start a new Claude Code session and ask Claude to **"check the bridge status"**. It tells you what is left to do. For a new user that is:
+
+1. Connect to Browser Workflow: run `/mcp`, choose **browser-workflow**, then **Authenticate**. On the page that opens, **Continue** is enough; you can create an account later.
+2. Ask Claude to "show my browser-workflow account", and click **New bridge token** in the view that appears. Copy the token.
+3. Run `/plugin configure browser-workflow-bridge` and paste it as **Bridge token**.
+4. Start a new session. "Check the bridge status" should now say **connected**.
+
+The first start downloads the bridge's parts (about 50 MB, usually a few seconds). If the bridge shows as failed in `/mcp` right after installing, wait a minute and reconnect it there.
+
+To update later: `/plugin marketplace update browser-workflow`. To remove: `/plugin uninstall browser-workflow-bridge@browser-workflow`.
+
 ## What the plugin adds
 
 | Part | What it is |
@@ -75,10 +110,12 @@ Pages a workflow opens load in Chrome as they would if you visited them yourself
 
 | Setting | What it's for |
 |---|---|
-| **Bridge token** | Links the bridge to your account. Create it in the Account view (ask Claude to "show my browser-workflow account"). Stored in your system's secure credential store |
-| **Server** | The Browser Workflow server's address. Leave the default unless you run your own server |
+| **Bridge token** | Links the bridge to your account. Create it in the Account view (ask Claude to "show my browser-workflow account", then **New bridge token**). Stored in your system's secure credential store |
+| **Server** | The Browser Workflow server's address. The default is the hosted server, `https://browser-workflow-294054962898.us-central1.run.app`. Change it only if you run your own server |
 | **Allowed sites** | Only let workflows open these sites, separated by commas. `*` (the default) allows any site |
 | **Data folder** | Where your runs are saved on this computer. Empty (the default) means `~/.browser-workflow` |
+
+Change them at any time with `/plugin configure browser-workflow-bridge`, then start a new session.
 
 ## Protocol
 
@@ -101,21 +138,29 @@ For `store` questions, `args` is an operation and its arguments: `listRuns`, `ge
 
 ## Development
 
-Load the plugin from this folder for one Claude Code session:
+There is one hosted server, and the plugin points at it by default. To work on the bridge, install it from this folder pointed at a server on your own computer (`http://127.0.0.1:3310`, where the server repo's dev commands listen):
+
+```bash
+npm run install:dev
+```
+
+It installs with no token, so the bridge starts unlinked, as it does for a new user: ask Claude to "check the bridge status" to read what it tells them, with your server running or not. `BW_BRIDGE_TOKEN=… npm run install:dev` installs it already linked, and `BW_BRIDGE_URL` names another address. `npm run install:dev -- --dry-run` shows the commands, and this takes it out again:
+
+```bash
+npm run install:dev -- --remove
+```
+
+Only one copy of the plugin is installed at a time. After `--remove`, the commands under [Install](#install) bring back the hosted version.
+
+For one session without installing anything:
 
 ```bash
 claude --plugin-dir .
 ```
 
-Or install it the way a user would. This folder is also a one-plugin marketplace:
+**How it starts.** Claude Code starts `src/start.js`. A copy installed from GitHub has no `node_modules`, so the first start runs `npm ci` into the plugin's data folder (`~/.claude/plugins/data/…`, kept across updates) and links it; a clone where you ran `npm install` is used as it is. Then it loads `src/index.js`, the bridge. If the install can't be done, it still answers Claude, and `bridge_status` says why.
 
-```bash
-claude plugin marketplace add .
-```
-
-```bash
-claude plugin install browser-workflow-bridge@browser-workflow
-```
+**What the bridge tells a user who isn't set up** is in `src/guide.js`: the steps `bridge_status` ends with when there is no token, when the server doesn't answer, or when the server refused the token.
 
 Run the bridge's tests, and check both manifests before pushing:
 

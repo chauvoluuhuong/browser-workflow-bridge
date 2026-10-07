@@ -7,6 +7,8 @@
     "name": "chauvoluuhuong"
   },
   "license": "MIT",
+  "homepage": "https://github.com/chauvoluuhuong/browser-workflow-bridge",
+  "repository": "https://github.com/chauvoluuhuong/browser-workflow-bridge",
   "keywords": [
     "browser",
     "automation",
@@ -17,14 +19,14 @@
     "token": {
       "type": "string",
       "title": "Bridge token",
-      "description": "Links this bridge to your Browser Workflow account. Create it in the Account view.",
+      "description": "Links this bridge to your Browser Workflow account. Ask Claude to \"show my browser-workflow account\" and click \"New bridge token\".",
       "sensitive": true
     },
     "server_url": {
       "type": "string",
       "title": "Server",
-      "description": "The Browser Workflow server's address. Change it only for development.",
-      "default": "http://127.0.0.1:3310"
+      "description": "The Browser Workflow server's address. Leave it unless you run your own server.",
+      "default": "https://browser-workflow-294054962898.us-central1.run.app"
     },
     "allowed_sites": {
       "type": "string",
