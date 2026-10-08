@@ -29,7 +29,7 @@ import { LocalDriver } from './driver.js';
 import { Inspector } from './inspector.js';
 import { bridgeId, createStorage, dataDir } from './storage.js';
 
-const VERSION = '0.5.1';
+const VERSION = '0.5.2';
 
 // stdout is the MCP channel: keep every log on stderr. The same lines, and every command, also go to
 // `bridge.log` in the data folder (src/log.js).

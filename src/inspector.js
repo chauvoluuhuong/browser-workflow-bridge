@@ -7,16 +7,22 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
+import { attachEndpoints } from './driver.js';
 /** chrome-devtools-mcp tools worth giving Claude for exploring pages and diagnosing failures. */
 export const CURATED = [
   'list_pages', 'select_page', 'new_page', 'navigate_page', 'take_snapshot', 'take_screenshot',
   'click', 'fill', 'press_key', 'evaluate_script', 'wait_for',
   'list_console_messages', 'list_network_requests', 'get_network_request',
 ];
-export function inspectorArgs(browser) {
+/** `found`: in attach mode, the running Chrome to join. --autoConnect finds only a Chrome with remote debugging allowed in its usual profile. */
+export function inspectorArgs(browser, found) {
   const args = ['--no-usage-statistics'];
-  if (browser.mode === 'attach')
-    args.push('--autoConnect');
+  if (browser.mode === 'attach') {
+    if (!found || found.usual)
+      args.push('--autoConnect');
+    else
+      args.push(...(found.browserUrl ? ['--browserUrl', found.browserUrl] : ['--wsEndpoint', found.ws]));
+  }
   else if (browser.mode === 'cdp' && browser.cdpEndpoint) {
     args.push(browser.cdpEndpoint.startsWith('ws') ? '--wsEndpoint' : '--browserUrl', browser.cdpEndpoint);
   }
@@ -56,6 +62,7 @@ export class Inspector {
   client;
   server;
   starting;
+  flags;
   tools;
   browser;
   constructor(browser, log = (m) => console.error(m)) {
@@ -63,11 +70,15 @@ export class Inspector {
     this.browser = browser;
   }
   connect() {
-    if (this.client)
-      return Promise.resolve(this.client);
     this.starting ??= (async () => {
+      // Asked at each use: Chrome may have been started, or started another way, since the last one.
+      const found = this.browser.mode === 'attach' ? (await attachEndpoints().next()).value : undefined;
+      const flags = inspectorArgs(this.browser, found);
+      if (this.client && this.flags === flags.join(' '))
+        return this.client;
+      await this.close();
       const d = await devtools();
-      const args = devtoolsArgs(d, inspectorArgs(this.browser));
+      const args = devtoolsArgs(d, flags);
       const server = await d.McpServer.from(args, { browserManager: new d.BrowserManager(args, {}) });
       const [near, far] = InMemoryTransport.createLinkedPair();
       await server.server.connect(far);
@@ -75,6 +86,7 @@ export class Inspector {
       await client.connect(near);
       this.server = server;
       this.client = client;
+      this.flags = flags.join(' ');
       return client;
     })().finally(() => { this.starting = undefined; });
     return this.starting;

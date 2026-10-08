@@ -2,7 +2,9 @@
 // Browser Workflow server (src/core/localDriver.ts) by its `npm run sync:bridge`, so a run behaves the
 // same on the server and here. Modes: attach = the user's running Chrome (same discovery as
 // chrome-devtools-mcp --autoConnect), cdp = any DevTools endpoint, launch = a new Chrome for the run.
+import { execFile } from 'node:child_process';
 import { promises as fs } from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
@@ -51,6 +53,98 @@ export async function readDevToolsActivePort(userDataDir) {
     return undefined;
   }
 }
+/** The browser endpoint a DevTools port answers with. Chrome answers only when it was started with that port, not when remote debugging was allowed in chrome://inspect. */
+export async function readDevToolsUrl(url) {
+  try {
+    const r = await fetch(`${url}/json/version`, { signal: AbortSignal.timeout(2000) });
+    const ws = (await r.json()).webSocketDebuggerUrl;
+    return typeof ws === 'string' ? ws : undefined;
+  }
+  catch {
+    return undefined;
+  }
+}
+/** The DevTools port and profile folder a Chrome was started with, from its command line. Nothing for other programs and for Chrome's own helper processes. */
+export function chromeOptions(commandLine) {
+  const program = commandLine.split(/\s--/)[0];
+  if (!/chrom(e|ium)/i.test(program) || /\s--type=/.test(commandLine))
+    return undefined;
+  const port = /\s--remote-debugging-port=(\d+)/.exec(commandLine)?.[1];
+  // A folder name may hold spaces, so it ends at the next option.
+  const dir = /\s--user-data-dir=(.+?)(?=\s+--|$)/.exec(commandLine)?.[1].trim().replace(/^"(.*)"$/, '$1');
+  if (port === undefined && !dir)
+    return undefined;
+  return { ...(port === undefined ? {} : { port: Number(port) }), ...(dir ? { userDataDir: dir } : {}) };
+}
+/** The command lines of the programs running on this computer; none when the system does not give them. */
+async function commandLines() {
+  try {
+    if (process.platform === 'linux') {
+      const pids = (await fs.readdir('/proc')).filter((d) => /^\d+$/.test(d));
+      return await Promise.all(pids.map((pid) => fs.readFile(`/proc/${pid}/cmdline`, 'utf8').then((c) => c.replace(/\0/g, ' ').trim(), () => '')));
+    }
+    const [cmd, args] = process.platform === 'win32'
+      ? ['powershell', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | ForEach-Object { $_.CommandLine }"]]
+      : ['ps', ['-axww', '-o', 'args=']];
+    const out = await new Promise((resolve, reject) => {
+      execFile(cmd, args, { timeout: 5000, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (e, stdout) => (e ? reject(e) : resolve(stdout)));
+    });
+    return out.split(/\r?\n/);
+  }
+  catch {
+    return [];
+  }
+}
+function listening(port) {
+  return new Promise((resolve) => {
+    const s = net.connect({ host: '127.0.0.1', port });
+    const done = (ok) => { s.destroy(); resolve(ok); };
+    s.setTimeout(1000, () => done(false));
+    s.once('connect', () => done(true));
+    s.once('error', () => done(false));
+  });
+}
+/**
+* The running Chromes that take DevTools connections, the likeliest first, found one at a time so the
+* usual case asks the system nothing:
+* 1. the port file of the usual profile: remote debugging allowed in chrome://inspect;
+* 2. what each running Chrome was started with: a DevTools port of its own (it writes no port file
+*    then), or another profile folder with a port file in it;
+* 3. port 9222, where the system does not give command lines.
+* A port file outlives its Chrome, so one whose port is closed is left out. `only` (or
+* BW_CHROME_USER_DATA_DIR) names the one profile folder to look in, and nothing else is tried.
+*/
+export async function* attachEndpoints(only = process.env.BW_CHROME_USER_DATA_DIR) {
+  const userDataDir = only ?? defaultChromeUserDataDir();
+  const seen = new Set();
+  const fresh = (ws) => !!ws && !seen.has(ws) && !!seen.add(ws);
+  const fromProfile = async (dir) => {
+    const ws = await readDevToolsActivePort(dir);
+    return ws && (await listening(Number(new URL(ws).port))) && fresh(ws) ? { ws, usual: dir === defaultChromeUserDataDir() } : undefined;
+  };
+  const fromPort = async (port) => {
+    const browserUrl = `http://127.0.0.1:${port}`;
+    const ws = await readDevToolsUrl(browserUrl);
+    return fresh(ws) ? { ws, browserUrl } : undefined;
+  };
+  const usual = await fromProfile(userDataDir);
+  if (usual)
+    yield usual;
+  if (only)
+    return;
+  for (const line of await commandLines()) {
+    const o = chromeOptions(line);
+    const byPort = o?.port ? await fromPort(o.port) : undefined;
+    if (byPort)
+      yield byPort;
+    const byProfile = o?.userDataDir && o.userDataDir !== userDataDir ? await fromProfile(o.userDataDir) : undefined;
+    if (byProfile)
+      yield byProfile;
+  }
+  const guess = await fromPort(9222);
+  if (guess)
+    yield guess;
+}
 /**
 * Wraps step code so functions are called with `arg` and plain expressions (or IIFEs) are awaited.
 * `setVariables({...})` is provided for workflows written for the crawler's older API; values
@@ -90,12 +184,23 @@ export class LocalDriver {
     b.on('disconnected', () => this.connections.delete(key));
     return b;
   }
-  async attachEndpoint() {
-    const dir = this.opts.chromeUserDataDir ?? process.env.BW_CHROME_USER_DATA_DIR ?? defaultChromeUserDataDir();
-    const ws = await readDevToolsActivePort(dir);
-    if (!ws)
-      throw new Error(ATTACH_OFF_MESSAGE);
-    return ws;
+  /** Connects to the first running Chrome that takes the connection. */
+  async attachBrowser() {
+    let refused;
+    for await (const e of attachEndpoints(this.opts.chromeUserDataDir)) {
+      try {
+        return await this.connect('attach', e.ws, ATTACH_TIMEOUT);
+      }
+      catch (err) {
+        const m = String(err?.message);
+        // Chrome is waiting for the user's Allow: another Chrome would not be the one they mean.
+        if (/Timeout/.test(m))
+          throw new Error(ATTACH_TIMEOUT_MESSAGE);
+        if (!/ECONNREFUSED/.test(m))
+          refused ??= m;
+      }
+    }
+    throw new Error(refused ?? ATTACH_OFF_MESSAGE);
   }
   async launch(headed) {
     // Port 0: no DevTools port (the cloud browser runs several Chromes and needs no inspector).
@@ -122,12 +227,7 @@ export class LocalDriver {
     let owned;
     try {
       if (o.mode === 'attach') {
-        // Chrome keeps DevToolsActivePort after remote debugging is turned off, so a refused
-        // connection means the same as a missing file.
-        const browser = await this.connect('attach', await this.attachEndpoint(), ATTACH_TIMEOUT).catch((e) => {
-          const m = String(e?.message);
-          throw new Error(/Timeout/.test(m) ? ATTACH_TIMEOUT_MESSAGE : /ECONNREFUSED/.test(m) ? ATTACH_OFF_MESSAGE : m);
-        });
+        const browser = await this.attachBrowser();
         const context = browser.contexts()[0] ?? (await browser.newContext());
         page = await context.newPage();
         owned = { kind: 'page' };
@@ -329,10 +429,7 @@ export class LocalDriver {
   async check(mode, cdpEndpoint) {
     try {
       if (mode === 'attach') {
-        const ws = await this.attachEndpoint().catch(() => undefined);
-        if (!ws)
-          return { runner: 'error', inspector: 'error', code: 'attach_unreachable' };
-        const b = await this.connect('attach', ws, ATTACH_TIMEOUT);
+        const b = await this.attachBrowser();
         return { runner: 'ok', inspector: 'ok', code: 'attach_ok', arg: b.version().split('.')[0] };
       }
       if (mode === 'cdp') {
