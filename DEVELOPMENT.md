@@ -91,7 +91,7 @@ claude --plugin-dir .
 
 **What the app tells a user who isn't set up** is in `src/guide.js`: the steps `bridge_status` ends with when it is not linked yet (with the code), when the server doesn't answer, or when the server refused this computer.
 
-**The file for the Claude desktop app** is built with `npm run build:app` (`dist/browser-workflow.mcpb`: the same code with its dependencies inside, from `mcpb/manifest.json`; `BW_BUILD_SERVER=http://127.0.0.1:3310` points it at a server on this computer). `npm run release` publishes it as a GitHub release, which the landing page's Download button points at (`releases/latest/download/browser-workflow.mcpb`). Both are run from the server repo with `npm run deploy:app`.
+**The file for the Claude desktop app** is built with `npm run build:app` (`dist/browser-workflow.mcpb`: the same code with its dependencies inside, from `mcpb/manifest.json`; `BW_BUILD_SERVER=http://127.0.0.1:3310` points it at a server on this computer). `npm run release` publishes it as a GitHub release, which the landing page's Download button points at (`releases/latest/download/browser-workflow.mcpb`). Both are run from the server repo with `npm run deploy:app`. GitHub does it by itself too (`.github/workflows/ci.yml`): every push to `main` is tested and built, and when `package.json` has a version with no release yet, that version is published. So to release, change the version in `package.json` and `.claude-plugin/plugin.json` and merge; a merge that leaves the version alone publishes nothing.
 
 Run the bridge's tests, and check both manifests before pushing:
 

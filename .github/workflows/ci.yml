@@ -1,0 +1,54 @@
+# Every pull request into main is tested and the app is built. Every push to main does the same, then
+# publishes the app as a GitHub release when package.json has a version with no release yet
+# (DEVELOPMENT.md). A push that doesn't change the version publishes nothing.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build:app
+
+  release:
+    if: github.event_name == 'push'
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # One release at a time; a newer push waits for the one under way.
+    concurrency: release
+    permissions:
+      contents: write # to create the release and its tag
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Publish this version when it has no release yet
+        run: |
+          tag="v$(node -p "require('./package.json').version")"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "$tag is already published: nothing to do. Change the version in package.json to publish a new one."
+          else
+            npm run release
+          fi
