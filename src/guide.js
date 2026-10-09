@@ -59,7 +59,7 @@ export function nextSteps(s) {
     const minutes = Math.max(1, Math.round(((s.pairing.expiresAt ?? 0) - Date.now()) / 60_000));
     return [
       `This computer is not linked to a Browser Workflow account yet. Pairing code: ${s.pairing.code} (valid for about ${minutes} more minutes).`,
-      'Claude does the linking; the user only clicks one button:',
+      'You do the linking; the user only clicks one button:',
       `1. Call the Browser Workflow tool \`link_computer\` with code "${s.pairing.code}". It shows the user a "Link this computer" button.`,
       '2. Ask the user to click it, then call bridge_status again: it should say connected.',
       'If there is no `link_computer` tool, the Browser Workflow connector is not added yet. Tell the user to add it, then call `link_computer`:',

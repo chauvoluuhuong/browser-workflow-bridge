@@ -11,6 +11,8 @@ The app is the local half of Browser Workflow: a small program with no workflow 
 | `bridge` | A local MCP server that Claude starts. It connects to the Browser Workflow server and runs the commands below. To Claude it offers `bridge_status` (connection state; pause or resume) and the `page_*` inspector tools |
 | `browser-workflow` | The Browser Workflow connector at `<Server>/mcp`: your workflows, runs and data. Connecting takes one click (**Continue**); you can create an account later, or sign in if you have one |
 
+An AI app may start several copies of the bridge from one data folder (the ChatGPT desktop app starts one per chat and short-lived ones while it works; two Claude Code sessions do the same). One copy is in charge: it alone pairs, registers with the server and runs workflows. The others stay passive, answer `bridge_status` with what the copy in charge says, and one of them takes over when it goes away (`src/copies.js`).
+
 The bridge runs where Claude can start local MCP servers from plugins: Claude Code (terminal, IDE, and the desktop app's Code tab) and Cowork on your computer.
 
 ## What it does in your browser
