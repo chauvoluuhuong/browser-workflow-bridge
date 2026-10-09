@@ -440,9 +440,27 @@ export class RestConnection {
     void this.register();
   }
 
-  async stop() {
+  /**
+   * Another copy of this app serves the account from now on (src/copies.js): stop listening and say
+   * nothing to the server, whose session that copy keeps. `start()` connects again.
+   */
+  release() {
+    clearTimeout(this.timer);
+    this.stream?.abort();
+    const had = this.session;
+    this.session = undefined;
+    this.account = undefined;
+    this.state = this.opts.token ? 'disconnected' : 'not_configured';
+    if (!had) return;
+    this.opts.onDisconnect?.();
+    this.wakeAll();
+  }
+
+  /** `signOff` false: a passive copy of this app stays behind and takes the session over. */
+  async stop(signOff = true) {
     this.stopped = true;
     clearTimeout(this.timer);
-    await this.signOff();
+    if (signOff) await this.signOff();
+    else this.stream?.abort();
   }
 }

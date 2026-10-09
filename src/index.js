@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Browser Workflow bridge: a local MCP server that Claude starts and keeps running. It connects to the
+// Browser Workflow bridge: a local MCP server that the AI app (Claude, ChatGPT…) starts. It connects to the
 // Browser Workflow server and carries out primitive browser commands (open a tab, navigate, act on an
 // XPath, evaluate, capture, close) in the user's Chrome. It holds no workflow logic: the server decides
 // every step. To Claude it offers bridge_status and the page_* inspector tools.
@@ -14,13 +14,17 @@
 // executable; BW_LAUNCH_DEBUG_PORT sets the DevTools port of launched Chrome (default 9333);
 // BW_MAX_RUN_MS is the longest a run's tab stays open (default and at most 60 minutes);
 // BW_MAX_BACKOFF_MS is the longest wait between two attempts to reconnect (default 30 seconds).
+// BW_SETTLE_MS is how long a copy must have run to take over at once (src/copies.js; default 10 seconds).
 // The bridge talks to the server with HTTP requests and holds no connection open to it (src/rest.js).
+// An AI app may start several copies from one data folder: one is in charge of the server, the
+// others stay passive (src/copies.js).
 // `node src/index.js --standalone` runs only the connection (no MCP), for a terminal or a dev script.
 // Claude Code starts src/start.js, which installs the dependencies when they are missing and then loads this.
 import { fromJsonSchema, McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 import { createExecutor, MAX_OPEN, parseSites } from './commands.js';
+import { Copies } from './copies.js';
 import { connectorHint, INSTRUCTIONS, nextSteps, PRODUCTION, reachable } from './guide.js';
 import { createLog } from './log.js';
 import { clearLink, Pairing, readLink, saveLink, usableToken } from './pairing.js';
@@ -74,8 +78,8 @@ const connection = new RestConnection({
     }
   },
   onConfig: (b) => {
-    browser = b;
-    void inspector?.configure(b);
+    useBrowser(b);
+    copies.setBrowser(b);
   },
   // Close every tab this bridge opened when the server goes away: nothing runs without it.
   onDisconnect: () => { void executor.closeAll(); },
@@ -111,8 +115,34 @@ const pairing = new Pairing({
     connection.setToken(t);
   },
 });
-if (token) connection.start();
-else pairing.start();
+/** The browser the server chose for this account: workflows and the page_* tools use the same one. */
+function useBrowser(b) {
+  browser = b;
+  void inspector?.configure(b);
+}
+
+// One copy per data folder talks to the server; the others ask it (src/copies.js).
+const copies = new Copies({
+  dir: baseDir,
+  log,
+  onInCharge: () => {
+    // Another copy may have linked this computer since this one started.
+    token = settingToken || readLink(baseDir, server);
+    if (token) connection.setToken(token);
+    else pairing.start();
+  },
+  onPassive: () => {
+    pairing.stop();
+    connection.release();
+  },
+  status: () => statusText(),
+  act: (action) => act(action),
+  onBrowser: useBrowser,
+  // A copy that was in charge for a moment may have taken the signals: register again to have them back.
+  onReturned: () => { if (token) connection.setToken(token); },
+  settleMs: Number(process.env.BW_SETTLE_MS) || undefined,
+});
+void copies.start();
 // Every minute, or sooner when the limit itself is shorter (tests).
 setInterval(() => void executor.sweep(), Math.min(60_000, Math.max(250, executor.maxRunMs / 2))).unref();
 
@@ -147,9 +177,38 @@ async function statusText() {
   ].filter((l) => l !== false && l !== undefined).join('\n').replace(/\n{3,}/g, '\n\n');
 }
 
+async function act(action) {
+  if (action === 'pause') {
+    connection.pause();
+    await executor.closeAll();
+  } else if (action === 'resume') {
+    connection.resume();
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+}
+
+/** What a passive copy answers: the status of the copy in charge, which is the one the server knows. */
+async function passiveStatus(action) {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    if (copies.leading) {
+      await act(action);
+      return statusText();
+    }
+    try {
+      return await (action ? copies.act(action) : copies.status());
+    } catch {
+      // The copy in charge just went away: another takes over within seconds, perhaps this one.
+      await new Promise((r) => setTimeout(r, 700));
+    }
+  }
+  return `Browser Workflow app ${VERSION}\nConnection: starting…\n\nWhat to do next:\nCall bridge_status again in a few seconds.`;
+}
+
 async function shutdown() {
   pairing.stop();
-  await connection.stop();
+  // A passive copy that stays behind takes the session over: only the last copy signs off.
+  const others = copies.stop();
+  await connection.stop(others === 0);
   await executor.closeAll();
   await driver.dispose().catch(() => {});
   await inspector?.close();
@@ -177,13 +236,9 @@ async function startMcp() {
       annotations: { title: 'Bridge status', readOnlyHint: false, destructiveHint: false },
     },
     async ({ action }) => {
-      if (action === 'pause') {
-        connection.pause();
-        await executor.closeAll();
-      } else if (action === 'resume') {
-        connection.resume();
-        await new Promise((r) => setTimeout(r, 1500));
-      }
+      // A passive copy answers for the one in charge, and passes "pause" and "resume" on to it.
+      if (!copies.leading) return { content: [{ type: 'text', text: await passiveStatus(action) }] };
+      await act(action);
       return { content: [{ type: 'text', text: await statusText() }] };
     },
   );

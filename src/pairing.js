@@ -1,6 +1,6 @@
 // Links this computer to a Browser Workflow account without a token for the user to copy and paste.
 //   1. The app asks the server for a pairing code (POST /pair) and shows it in `bridge_status`.
-//   2. Claude, which has both this app and the Browser Workflow connector, passes the code to the
+//   2. The AI app, which has both this app and the Browser Workflow connector, passes the code to the
 //      connector's `link_computer` tool. The connector shows the user a "Link this computer" button.
 //   3. The user clicks it. The server then gives this app a token, once, at its next poll.
 //   4. The token is kept in `link.json` in the data folder (readable by its owner only) and used from
@@ -131,7 +131,7 @@ export class Pairing {
     this.code = json.code;
     this.expiresAt = Date.now() + (Number(json.expiresIn) > 0 ? Number(json.expiresIn) * 1000 : 600_000);
     this.state = 'waiting';
-    this.log(`pairing code ${this.code} (waiting for the user to confirm it in Claude)`);
+    this.log(`pairing code ${this.code} (waiting for the user to confirm it in the chat)`);
     this.later(this.pollMs, this.poll);
   }
 
