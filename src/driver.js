@@ -30,6 +30,11 @@ export function apiCallOf(r) {
 const ATTACH_TIMEOUT = 60_000;
 const ATTACH_TIMEOUT_MESSAGE = 'Chrome did not accept the connection within 60 s. Chrome asks to allow remote debugging: click Allow in the Chrome window, then run again.';
 const ATTACH_OFF_MESSAGE = 'Chrome is not accepting remote debugging connections. Open chrome://inspect/#remote-debugging and allow remote debugging, then run again.';
+const ATTACH_STUCK_START = 'A tab in Chrome is not responding';
+const attachStuckMessage = (titles) => `${ATTACH_STUCK_START} (${titles.map((t) => `"${t}"`).join(', ')}), so Chrome can't be used for the run. Close that tab in Chrome, then run again.`;
+/** How long a tab has to answer, and how long a connection gets once a tab is known not to. */
+const STUCK_TAB_MS = 2500;
+const STUCK_GRACE_MS = 4000;
 const LAUNCH_ARGS = ['--disable-blink-features=AutomationControlled', '--no-first-run', '--no-default-browser-check'];
 export function defaultChromeUserDataDir() {
   const home = os.homedir();
@@ -102,6 +107,81 @@ function listening(port) {
     s.setTimeout(1000, () => done(false));
     s.once('connect', () => done(true));
     s.once('error', () => done(false));
+  });
+}
+/**
+* The titles of the open tabs that do not answer, asked over a DevTools connection of its own.
+* Playwright waits for every open tab when it connects to a running Chrome, so one crashed tab makes
+* the connection hang until it times out, and the user is told to click an Allow button that is not
+* there. `undefined`: nothing is known (Chrome did not take this connection in time: it may be asking
+* the user to allow it; or this Node.js has no WebSocket).
+*/
+export function stuckTabs(ws, ms = STUCK_TAB_MS) {
+  const WS = globalThis.WebSocket;
+  if (!WS)
+    return Promise.resolve(undefined);
+  return new Promise((resolve) => {
+    let socket;
+    let done = false;
+    const finish = (v) => {
+      if (done)
+        return;
+      done = true;
+      clearTimeout(giveUp);
+      try {
+        socket?.close();
+      }
+      catch { /* already closed */ }
+      resolve(v);
+    };
+    // Twice the time a tab gets: once to connect and list the tabs, once for them to answer.
+    const giveUp = setTimeout(() => finish(undefined), ms * 2 + 500);
+    let seq = 0;
+    const waiting = new Map();
+    const ask = (method, params = {}, sessionId) => new Promise((answer) => {
+      const id = ++seq;
+      waiting.set(id, answer);
+      socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+      setTimeout(() => { if (waiting.delete(id))
+        answer(undefined); }, ms);
+    });
+    try {
+      socket = new WS(ws);
+    }
+    catch {
+      return finish(undefined);
+    }
+    socket.onerror = () => finish(undefined);
+    socket.onclose = () => finish(undefined);
+    socket.onmessage = (e) => {
+      let m;
+      try {
+        m = JSON.parse(String(e.data));
+      }
+      catch {
+        return;
+      }
+      const answer = waiting.get(m.id);
+      if (!answer)
+        return;
+      waiting.delete(m.id);
+      answer(m);
+    };
+    socket.onopen = async () => {
+      const targets = (await ask('Target.getTargets'))?.result?.targetInfos;
+      if (!Array.isArray(targets))
+        return finish(undefined);
+      const pages = targets.filter((t) => t.type === 'page');
+      const stuck = await Promise.all(pages.map(async (t) => {
+        const sessionId = (await ask('Target.attachToTarget', { targetId: t.targetId, flatten: true }))?.result?.sessionId;
+        if (!sessionId)
+          return undefined;
+        const alive = await ask('Page.getFrameTree', {}, sessionId);
+        void ask('Target.detachFromTarget', { sessionId });
+        return alive ? undefined : String(t.title || t.url || 'a tab').slice(0, 60);
+      }));
+      finish(stuck.filter((t) => !!t));
+    };
   });
 }
 /**
@@ -185,17 +265,44 @@ export class LocalDriver {
     return b;
   }
   /** Connects to the first running Chrome that takes the connection. */
+  /** Rejects when a tab does not answer and the connection is still not made a little later. Never resolves. */
+  stuckWhileConnecting(ws, connecting) {
+    return new Promise((_, reject) => {
+      let made = false;
+      connecting.then(() => { made = true; }, () => { made = true; });
+      void stuckTabs(ws).then((stuck) => {
+        if (!stuck?.length)
+          return;
+        setTimeout(() => {
+          if (made)
+            return;
+          this.connections.delete('attach');
+          reject(new Error(attachStuckMessage(stuck)));
+        }, STUCK_GRACE_MS).unref?.();
+      });
+    });
+  }
   async attachBrowser() {
     let refused;
     for await (const e of attachEndpoints(this.opts.chromeUserDataDir)) {
+      const connecting = this.connect('attach', e.ws, ATTACH_TIMEOUT);
+      // A Chrome started with a DevTools port asks the user nothing, so its tabs can be looked at
+      // while the connection is made. A connection that succeeds is never refused: only one still
+      // not made a few seconds after a tab was found not to answer is given up, instead of in 60 s.
+      const gaveUp = e.browserUrl ? this.stuckWhileConnecting(e.ws, connecting) : undefined;
       try {
-        return await this.connect('attach', e.ws, ATTACH_TIMEOUT);
+        return await (gaveUp ? Promise.race([connecting, gaveUp]) : connecting);
       }
       catch (err) {
         const m = String(err?.message);
-        // Chrome is waiting for the user's Allow: another Chrome would not be the one they mean.
-        if (/Timeout/.test(m))
-          throw new Error(ATTACH_TIMEOUT_MESSAGE);
+        if (m.startsWith(ATTACH_STUCK_START))
+          throw err;
+        if (/Timeout/.test(m)) {
+          // Timed out: a tab that does not answer, or Chrome waiting for the user's Allow (another
+          // Chrome would not be the one they mean).
+          const stuck = await stuckTabs(e.ws);
+          throw new Error(stuck?.length ? attachStuckMessage(stuck) : ATTACH_TIMEOUT_MESSAGE);
+        }
         if (!/ECONNREFUSED/.test(m))
           refused ??= m;
       }
@@ -253,9 +360,9 @@ export class LocalDriver {
     }
     catch (err) {
       const { raw, stack } = classify(err, 'unknown_error');
-      // target 'attach_prompt' / 'attach_off': the widget explains Chrome's Allow prompt or the
-      // remote-debugging switch in the user's language.
-      const target = raw === ATTACH_TIMEOUT_MESSAGE ? 'attach_prompt' : raw === ATTACH_OFF_MESSAGE ? 'attach_off' : undefined;
+      // target 'attach_prompt' / 'attach_off' / 'attach_stuck': the widget explains Chrome's Allow
+      // prompt, the remote-debugging switch or the tab to close in the user's language.
+      const target = raw === ATTACH_TIMEOUT_MESSAGE ? 'attach_prompt' : raw === ATTACH_OFF_MESSAGE ? 'attach_off' : raw.startsWith(ATTACH_STUCK_START) ? 'attach_stuck' : undefined;
       return { ok: false, error: { type: 'browser_unavailable', raw, stack, ...(target ? { target } : {}) } };
     }
     const consoleErrors = [];

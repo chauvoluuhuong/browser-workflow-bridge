@@ -1,6 +1,6 @@
 {
   "name": "browser-workflow-bridge",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "private": true,
   "type": "module",
   "description": "Local bridge between the Browser Workflow server and the user's Chrome (Claude plugin).",
