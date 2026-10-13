@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { test } from 'node:test';
-import { isAlone, OwnAccount, readTools } from '../src/alone.js';
+import { cardAddress, isAlone, OwnAccount, readTools } from '../src/alone.js';
 
 test('is alone only when asked to be', () => {
   assert.equal(isAlone({}), false);
@@ -22,6 +22,31 @@ test('ships the server\'s tools, readable, without the ones that link a computer
   assert.ok(list.instructions.length > 100);
   assert.ok(list.resources[0].uri.startsWith('ui://'));
   assert.ok(!JSON.stringify(list).includes('{{server}}'));
+});
+
+test('shows the card the server has today, and the shipped one when the server does not say', async () => {
+  const shipped = readTools('https://example.test').resources[0].uri;
+  let answer = { ok: true, ui: 'ui://browser-workflow/app-0123456789.html' };
+  const server = createServer((req, res) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(answer)));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const at = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const today = await cardAddress(at);
+    assert.equal(today, 'ui://browser-workflow/app-0123456789.html');
+    const list = readTools(at, today);
+    assert.equal(list.resources[0].uri, today);
+    assert.equal(list.tools.find((t) => t.name === 'list_workflows')._meta.ui.resourceUri, today);
+    assert.ok(!JSON.stringify(list).includes(shipped));
+    // An older server says nothing, and anything that is not a card's address is not taken.
+    answer = { ok: true };
+    assert.equal(await cardAddress(at), undefined);
+    answer = { ok: true, ui: 'https://elsewhere.test/x.html' };
+    assert.equal(await cardAddress(at), undefined);
+    assert.equal(readTools(at, undefined).resources[0].uri, shipped);
+  } finally {
+    server.close();
+  }
+  assert.equal(await cardAddress('http://127.0.0.1:9', 300), undefined);
 });
 
 test('gets an account of its own, and tries again while the server is away', async () => {

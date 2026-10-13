@@ -24,7 +24,7 @@ import { fromJsonSchema, McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 import { createExecutor, MAX_OPEN, parseSites } from './commands.js';
-import { createUpstream, isAlone, OwnAccount, readTools } from './alone.js';
+import { cardAddress, createUpstream, isAlone, OwnAccount, readTools } from './alone.js';
 import { Copies } from './copies.js';
 import { ALONE_INSTRUCTIONS, connectorHint, INSTRUCTIONS, nextSteps, PRODUCTION, reachable } from './guide.js';
 import { createLog } from './log.js';
@@ -34,7 +34,7 @@ import { LocalDriver } from './driver.js';
 import { Inspector } from './inspector.js';
 import { bridgeId, createStorage, dataDir } from './storage.js';
 
-const VERSION = '1.1.0-alpha.2';
+const VERSION = '1.1.0-alpha.3';
 
 // stdout is the MCP channel: keep every log on stderr. The same lines, and every command, also go to
 // `bridge.log` in the data folder (src/log.js).
@@ -229,7 +229,7 @@ if (standalone) {
 }
 
 async function startMcp() {
-  const offered = alone ? readTools(server) : undefined;
+  const offered = alone ? readTools(server, await cardAddress(server)) : undefined;
   const mcp = new McpServer({ name: 'browser-workflow-bridge', version: VERSION }, { instructions: offered ? `${ALONE_INSTRUCTIONS}\n\n${offered.instructions}` : INSTRUCTIONS });
 
   // Alone: the server's tools and cards, from the list shipped with the app; each call is passed on.

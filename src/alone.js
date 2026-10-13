@@ -6,6 +6,9 @@
 //      `tools.json`, written by the server's `scripts/sync-tools.ts` and shipped with the app, so what
 //      the AI is told a tool does is readable here and never fetched at run time. The work of a tool
 //      stays on the server: each call is passed on to it with the key, and its answer handed back as it is.
+//      So does a card: its page is read from the server each time. Only the page's address is in the
+//      list, and an AI app keeps a page it fetched under its address, so the app asks the server for
+//      today's address when it starts (`cardAddress`): a changed card is then seen without a new app.
 // Without BW_ALONE nothing here is used, and the app is linked by pairing as before.
 import { readFileSync } from 'node:fs';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
@@ -18,9 +21,28 @@ export const isAlone = (env = process.env) => env.BW_ALONE === '1';
 /** Tools that link a computer: an app with an account of its own has nothing to link. */
 const NOT_ALONE = new Set(['link_computer', 'ui_confirm_link', 'ui_new_bridge_token']);
 
-/** The server's tools as shipped with the app, with this server's address where a card's settings name it. */
-export function readTools(server, file = new URL('./tools.json', import.meta.url)) {
-  const list = JSON.parse(readFileSync(file, 'utf8').split('{{server}}').join(server));
+/** A card page's address: "ui://browser-workflow/app-<a mark of its build>.html". */
+const CARD = /ui:\/\/browser-workflow\/app-[0-9a-f]+\.html/g;
+
+/** The address of the card's page on the server today; nothing when the server does not answer in time, or is an older one. */
+export async function cardAddress(server, timeoutMs = 2500) {
+  try {
+    const res = await fetch(`${server}/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    const ui = (await res.json()).ui;
+    return typeof ui === 'string' && new RegExp(`^(?:${CARD.source})$`).test(ui) ? ui : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The server's tools as shipped with the app, with this server's address where a card's settings name
+ * it, and `card` (today's address of the card's page, when known) in place of the one of the day the list was written.
+ */
+export function readTools(server, card, file = new URL('./tools.json', import.meta.url)) {
+  let text = readFileSync(file, 'utf8').split('{{server}}').join(server);
+  if (card) text = text.replace(CARD, card);
+  const list = JSON.parse(text);
   return { instructions: list.instructions ?? '', tools: (list.tools ?? []).filter((t) => !NOT_ALONE.has(t.name)), resources: list.resources ?? [] };
 }
 
