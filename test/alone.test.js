@@ -1,0 +1,80 @@
+// The app alone in an AI app (src/alone.js): the list of the server's tools it ships, and the account it gets by itself.
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { test } from 'node:test';
+import { cardAddress, isAlone, OwnAccount, readTools } from '../src/alone.js';
+
+test('is alone on a computer nobody linked, and as it was on one a user linked', () => {
+  assert.equal(isAlone({}), true);
+  assert.equal(isAlone({}, true), false);
+  assert.equal(isAlone({ BW_BRIDGE_TOKEN: 'bwb_pasted' }), false);
+  assert.equal(isAlone({ BW_BRIDGE_TOKEN: '${user_config.token}' }), true);
+  // The setting decides when it is there: the install command's, and the Claude Code plugin's 0.
+  assert.equal(isAlone({ BW_ALONE: '1' }, true), true);
+  assert.equal(isAlone({ BW_ALONE: '0' }), false);
+});
+
+test('ships the server\'s tools, readable, without the ones that link a computer', () => {
+  const list = readTools('https://example.test');
+  const names = list.tools.map((t) => t.name);
+  for (const n of ['run_workflow', 'propose_workflow', 'get_account']) assert.ok(names.includes(n), n);
+  for (const n of ['link_computer', 'ui_confirm_link']) assert.ok(!names.includes(n), n);
+  // Every tool says what it does and carries the labels a directory asks for.
+  for (const t of list.tools) {
+    assert.ok(t.description && t.inputSchema, t.name);
+    assert.equal(typeof t.annotations?.readOnlyHint, 'boolean', t.name);
+  }
+  assert.ok(list.instructions.length > 100);
+  assert.ok(list.resources[0].uri.startsWith('ui://'));
+  assert.ok(!JSON.stringify(list).includes('{{server}}'));
+});
+
+test('shows the card the server has today, and the shipped one when the server does not say', async () => {
+  const shipped = readTools('https://example.test').resources[0].uri;
+  let answer = { ok: true, ui: 'ui://browser-workflow/app-0123456789.html' };
+  const server = createServer((req, res) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(answer)));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const at = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const today = await cardAddress(at);
+    assert.equal(today, 'ui://browser-workflow/app-0123456789.html');
+    const list = readTools(at, today);
+    assert.equal(list.resources[0].uri, today);
+    assert.equal(list.tools.find((t) => t.name === 'list_workflows')._meta.ui.resourceUri, today);
+    assert.ok(!JSON.stringify(list).includes(shipped));
+    // An older server says nothing, and anything that is not a card's address is not taken.
+    answer = { ok: true };
+    assert.equal(await cardAddress(at), undefined);
+    answer = { ok: true, ui: 'https://elsewhere.test/x.html' };
+    assert.equal(await cardAddress(at), undefined);
+    assert.equal(readTools(at, undefined).resources[0].uri, shipped);
+  } finally {
+    server.close();
+  }
+  assert.equal(await cardAddress('http://127.0.0.1:9', 300), undefined);
+});
+
+test('gets an account of its own, and tries again while the server is away', async () => {
+  let asked = 0;
+  const server = createServer((req, res) => {
+    asked += 1;
+    let body = '';
+    req.on('data', (d) => { body += d; });
+    req.on('end', () => {
+      if (asked === 1) { res.writeHead(503).end('{}'); return; }
+      assert.equal(req.url, '/api/bridge/v1/account');
+      assert.equal(JSON.parse(body).protocol, 3);
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ token: 'bwb_key', account: 'anon-1' }));
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    const linked = await new Promise((resolve) => {
+      const own = new OwnAccount({ server: `http://127.0.0.1:${server.address().port}`, version: '1.1.0', protocol: 3, maxBackoffMs: 20, onLinked: (token, account) => resolve({ token, account, own }) });
+      own.start();
+    });
+    assert.deepEqual([linked.token, linked.account, linked.own.state, asked], ['bwb_key', 'anon-1', 'linked', 2]);
+  } finally {
+    server.close();
+  }
+});

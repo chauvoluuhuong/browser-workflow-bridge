@@ -19,7 +19,7 @@
     "mcp_config": {
       "command": "node",
       "args": ["${__dirname}/src/index.js"],
-      "env": { "BW_SERVER_URL": "__SERVER__" }
+      "env": { "BW_SERVER_URL": "__SERVER__", "BW_ALONE": "0" }
     }
   },
   "tools": [

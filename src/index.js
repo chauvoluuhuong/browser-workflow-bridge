@@ -24,16 +24,17 @@ import { fromJsonSchema, McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 import { createExecutor, MAX_OPEN, parseSites } from './commands.js';
+import { cardAddress, createUpstream, isAlone, OwnAccount, readTools } from './alone.js';
 import { Copies } from './copies.js';
-import { connectorHint, INSTRUCTIONS, nextSteps, PRODUCTION, reachable } from './guide.js';
+import { ALONE_INSTRUCTIONS, connectorHint, INSTRUCTIONS, nextSteps, PRODUCTION, reachable } from './guide.js';
 import { createLog } from './log.js';
-import { clearLink, Pairing, readLink, saveLink, usableToken } from './pairing.js';
+import { clearLink, linkedByUser, Pairing, readLink, saveLink, usableToken } from './pairing.js';
 import { PROTOCOL, RestConnection } from './rest.js';
 import { LocalDriver } from './driver.js';
 import { Inspector } from './inspector.js';
 import { bridgeId, createStorage, dataDir } from './storage.js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 
 // stdout is the MCP channel: keep every log on stderr. The same lines, and every command, also go to
 // `bridge.log` in the data folder (src/log.js).
@@ -47,6 +48,8 @@ const baseDir = dataDir(process.env.BW_DATA_DIR);
 const settingToken = usableToken(process.env.BW_BRIDGE_TOKEN);
 let token = settingToken || readLink(baseDir, server);
 const allowedSites = parseSites(process.env.BW_ALLOWED_SITES);
+// The only thing the AI app has: it gets an account of its own and offers the server's tools itself (src/alone.js).
+const alone = isAlone(process.env, linkedByUser(baseDir, server));
 let browser = { mode: 'attach', headed: true };
 
 const driver = new LocalDriver({
@@ -97,7 +100,8 @@ const connection = new RestConnection({
   maxBackoffMs: Number(process.env.BW_MAX_BACKOFF_MS) || undefined,
 });
 // No token yet: pair. Claude passes the code to the connector, the user clicks, and the token arrives.
-const pairing = new Pairing({
+// Alone, there is no connector to pass a code to: the app asks for an account of its own.
+const pairing = new (alone ? OwnAccount : Pairing)({
   server,
   version: VERSION,
   protocol: PROTOCOL,
@@ -108,7 +112,7 @@ const pairing = new Pairing({
   onLinked: (t) => {
     token = t;
     try {
-      saveLink(baseDir, server, t);
+      saveLink(baseDir, server, t, alone);
     } catch (e) {
       log(`could not save the link in ${baseDir}: ${e?.message ?? e}; it lasts until this app stops`);
     }
@@ -159,11 +163,11 @@ async function statusText() {
   const c = connection;
   // Not connected: say whether the server is there at all, since the steps depend on it.
   const serverUp = ['not_configured', 'connecting', 'disconnected'].includes(c.state) ? await reachable(server) : true;
-  const steps = nextSteps({ state: c.state, server, token: !!token, lastError: c.lastError, serverUp, pairing });
+  const steps = nextSteps({ state: c.state, server, token: !!token, lastError: c.lastError, serverUp, pairing, alone });
   return [
     `Browser Workflow app ${VERSION}`,
     `Server: ${server}${serverUp ? '' : ' (not answering)'}`,
-    `Token: ${token ? 'set' : 'not set (this computer links itself by pairing)'}`,
+    `Token: ${token ? 'set' : alone ? 'not set (this computer is getting an account of its own)' : 'not set (this computer links itself by pairing)'}`,
     `Connection: ${STATES[c.state] ?? c.state}${c.state === 'connected' ? ` as ${c.account} since ${c.connectedAt}` : ''}`,
     c.lastError && c.state !== 'connected' ? `Last error: ${c.lastError}` : undefined,
     `Browser mode: ${browser.mode}${browser.cdpEndpoint ? ` (${browser.cdpEndpoint})` : ''}`,
@@ -173,7 +177,7 @@ async function statusText() {
     `Runs saved in: ${storage.location() ?? `${baseDir} (once connected)`}`,
     `Log: ${logFile}`,
     '',
-    ...(steps.length ? ['What to do next:', ...steps] : [connectorHint(server)]),
+    ...(steps.length ? ['What to do next:', ...steps] : alone ? [] : [connectorHint(server)]),
   ].filter((l) => l !== false && l !== undefined).join('\n').replace(/\n{3,}/g, '\n\n');
 }
 
@@ -225,7 +229,25 @@ if (standalone) {
 }
 
 async function startMcp() {
-  const mcp = new McpServer({ name: 'browser-workflow-bridge', version: VERSION }, { instructions: INSTRUCTIONS });
+  const offered = alone ? readTools(server, await cardAddress(server)) : undefined;
+  const mcp = new McpServer({ name: 'browser-workflow-bridge', version: VERSION }, { instructions: offered ? `${ALONE_INSTRUCTIONS}\n\n${offered.instructions}` : INSTRUCTIONS });
+
+  // Alone: the server's tools and cards, from the list shipped with the app; each call is passed on.
+  if (offered) {
+    // Any copy can pass a request on: it needs only the key, which the copy in charge saved in the data folder.
+    const upstream = createUpstream({ server, token: () => token || readLink(baseDir, server), version: VERSION, log });
+    for (const t of offered.tools) {
+      mcp.registerTool(
+        t.name,
+        { title: t.title, description: t.description, inputSchema: fromJsonSchema(t.inputSchema), annotations: t.annotations, _meta: t._meta },
+        async (args) => upstream.call(t.name, args),
+      );
+    }
+    for (const r of offered.resources) {
+      mcp.registerResource(r.name, r.uri, { title: r.title, description: r.description, mimeType: r.mimeType, _meta: r._meta }, async () => upstream.read(r.uri));
+    }
+    log(`alone in the AI app: offering ${offered.tools.length} of the server's tools`);
+  }
 
   mcp.registerTool(
     'bridge_status',

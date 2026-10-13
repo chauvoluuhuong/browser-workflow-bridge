@@ -15,6 +15,14 @@ An AI app may start several copies of the bridge from one data folder (the ChatG
 
 The bridge runs where Claude can start local MCP servers from plugins: Claude Code (terminal, IDE, and the desktop app's Code tab) and Cowork on your computer.
 
+## Alone in the AI app, or with the connector
+
+On a computer nobody linked, the app starts **alone** (`src/alone.js`): it is the only thing the AI app has. It asks the server for an account of its own (`POST /account`), keeps the token as that account's one key, and offers the server's tools itself, from the list in `src/tools.json`. Each call is passed on to the server's `/mcp` with the key, and the answer handed back as it is; a card's page is read from the server the same way, under the address the server says is today's (`/health`). No connector to add, nothing to sign in to, no computer to link.
+
+`src/tools.json` is written by the server's `npx tsx scripts/sync-tools.ts` and shipped with the app, so what the AI is told a tool does is readable here and is not fetched at run time. Run it when a tool is added, removed or described anew; how a tool works, and what a card shows, change on the server alone.
+
+A computer a user linked the earlier way (a `link.json` without `own`) has the connector too, so the app stays as it was there. `BW_ALONE=1` or `0` decides instead of that. The install command sets `1` (or `0` when asked for the earlier way). The Claude Code plugin, which brings the connector, sets `0`, and so does the file for the Claude desktop app (`mcpb/manifest.json`): it is offered by the connector's own card in the chat, to someone who has the connector.
+
 ## What it does in your browser
 
 The bridge connects to Chrome through the Chrome DevTools Protocol (Playwright) and accepts only these commands from the server:
