@@ -52,6 +52,8 @@ export function nextSteps(s) {
 
   if (s.state === 'connected') return [];
   if (s.state === 'paused') return ['The app is paused. Ask to resume it (bridge_status with action "resume").'];
+  // Alone in the AI app it gets an account by itself: there is no code, and nothing for the user to do.
+  if (s.state === 'not_configured' && s.alone) return down ? serverDown : ['This computer is getting its account from the server… call bridge_status again in a few seconds.'];
   if (s.state === 'not_configured') {
     // The server is there but refused the pairing request: an app newer than the server, most likely.
     if (s.serverUp !== false && s.pairing?.state === 'unreachable') return [`The server answers, but not to the pairing request${s.pairing.lastError ? ` (${s.pairing.lastError})` : ''}. Try again in a minute; if it keeps failing, the server needs updating.`];
@@ -81,6 +83,13 @@ export function nextSteps(s) {
 export function connectorHint(server) {
   return ['If the browser-workflow tools (list_workflows, run_workflow…) are missing in this session, the connector is not added yet:', ...connectorSteps(server)].join('\n');
 }
+
+/** The same, when this app is the only thing the AI app has (src/alone.js): the server's own instructions follow these. */
+export const ALONE_INSTRUCTIONS = [
+  'This app is all of Browser Workflow in this AI app: it has the tools that create, run and fix workflows, and it runs them in the user\'s own Chrome.',
+  'There is no connector to add, nothing to sign in to and no computer to link: this computer has an account of its own. Never tell the user to link a computer, to add a connector or to install the app: it is installed, since you are reading this.',
+  'When a tool says the app or the browser is not connected, or a run could not start, call bridge_status: it says what is wrong and what to do.',
+].join(' ');
 
 /** Given to Claude when the app starts (MCP instructions). */
 export const INSTRUCTIONS = [
