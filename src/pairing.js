@@ -32,11 +32,22 @@ export function readLink(dir, server) {
   }
 }
 
-export function saveLink(dir, server, token) {
+/** `own`: the token is the key of an account this app asked for by itself (src/alone.js), not one a user linked. */
+export function saveLink(dir, server, token, own = false) {
   mkdirSync(dir, { recursive: true });
   const file = linkFile(dir);
-  writeFileSync(file, `${JSON.stringify({ server, token })}\n`, { mode: 0o600 });
+  writeFileSync(file, `${JSON.stringify({ server, token, ...(own ? { own: true } : {}) })}\n`, { mode: 0o600 });
   try { chmodSync(file, 0o600); } catch { /* not supported on this file system */ }
+}
+
+/** True when this computer was linked to an account by a user, the earlier way: such a computer has the connector too. */
+export function linkedByUser(dir, server) {
+  try {
+    const j = JSON.parse(readFileSync(linkFile(dir), 'utf8'));
+    return j.server === server && !!usableToken(j.token) && j.own !== true;
+  } catch {
+    return false;
+  }
 }
 
 export function clearLink(dir) {

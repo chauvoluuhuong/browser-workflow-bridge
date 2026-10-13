@@ -28,13 +28,13 @@ import { cardAddress, createUpstream, isAlone, OwnAccount, readTools } from './a
 import { Copies } from './copies.js';
 import { ALONE_INSTRUCTIONS, connectorHint, INSTRUCTIONS, nextSteps, PRODUCTION, reachable } from './guide.js';
 import { createLog } from './log.js';
-import { clearLink, Pairing, readLink, saveLink, usableToken } from './pairing.js';
+import { clearLink, linkedByUser, Pairing, readLink, saveLink, usableToken } from './pairing.js';
 import { PROTOCOL, RestConnection } from './rest.js';
 import { LocalDriver } from './driver.js';
 import { Inspector } from './inspector.js';
 import { bridgeId, createStorage, dataDir } from './storage.js';
 
-const VERSION = '1.1.0-alpha.3';
+const VERSION = '1.1.0';
 
 // stdout is the MCP channel: keep every log on stderr. The same lines, and every command, also go to
 // `bridge.log` in the data folder (src/log.js).
@@ -49,7 +49,7 @@ const settingToken = usableToken(process.env.BW_BRIDGE_TOKEN);
 let token = settingToken || readLink(baseDir, server);
 const allowedSites = parseSites(process.env.BW_ALLOWED_SITES);
 // The only thing the AI app has: it gets an account of its own and offers the server's tools itself (src/alone.js).
-const alone = isAlone();
+const alone = isAlone(process.env, linkedByUser(baseDir, server));
 let browser = { mode: 'attach', headed: true };
 
 const driver = new LocalDriver({
@@ -112,7 +112,7 @@ const pairing = new (alone ? OwnAccount : Pairing)({
   onLinked: (t) => {
     token = t;
     try {
-      saveLink(baseDir, server, t);
+      saveLink(baseDir, server, t, alone);
     } catch (e) {
       log(`could not save the link in ${baseDir}: ${e?.message ?? e}; it lasts until this app stops`);
     }

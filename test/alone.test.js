@@ -4,9 +4,14 @@ import { createServer } from 'node:http';
 import { test } from 'node:test';
 import { cardAddress, isAlone, OwnAccount, readTools } from '../src/alone.js';
 
-test('is alone only when asked to be', () => {
-  assert.equal(isAlone({}), false);
-  assert.equal(isAlone({ BW_ALONE: '1' }), true);
+test('is alone on a computer nobody linked, and as it was on one a user linked', () => {
+  assert.equal(isAlone({}), true);
+  assert.equal(isAlone({}, true), false);
+  assert.equal(isAlone({ BW_BRIDGE_TOKEN: 'bwb_pasted' }), false);
+  assert.equal(isAlone({ BW_BRIDGE_TOKEN: '${user_config.token}' }), true);
+  // The setting decides when it is there: the install command's, and the Claude Code plugin's 0.
+  assert.equal(isAlone({ BW_ALONE: '1' }, true), true);
+  assert.equal(isAlone({ BW_ALONE: '0' }), false);
 });
 
 test('ships the server\'s tools, readable, without the ones that link a computer', () => {

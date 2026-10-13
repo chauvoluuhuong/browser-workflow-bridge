@@ -13,25 +13,29 @@ Browser Workflow turns a task you repeat (checking prices, collecting a list, fi
 
 ## Install
 
-You need [Google Chrome](https://www.google.com/chrome/) and the Claude desktop app (or Claude Code, below). It takes about two minutes, once.
+You need [Google Chrome](https://www.google.com/chrome/) and the Claude desktop app or the ChatGPT desktop app (or Claude Code, below). It takes about two minutes, once, and there is no account to create and nothing to sign in to.
 
-### In the Claude desktop app (macOS, Windows)
+### In the Claude or the ChatGPT desktop app (Windows, macOS, Linux)
 
-1. **Add Browser Workflow to Claude.** Open **Settings → Connectors → Add custom connector**, name it Browser Workflow, and paste this address:
+1. **Paste one command.** It adds this app to the AI apps on your computer.
+
+   On Windows, press the **Windows** key, type **PowerShell**, press **Enter**, and paste:
 
    ```text
-   https://browser-workflow-294054962898.us-central1.run.app/mcp
+   irm https://browser-workflow.web.app/install.ps1 | iex
    ```
 
-   On the page that opens, click **Continue**.
+   On a Mac or Linux, open the **Terminal** app and paste:
 
-2. **Ask Claude for something to automate**, for example: *"Create a workflow that opens example.com and collects the page title."*
+   ```text
+   curl -fsSL https://browser-workflow.web.app/install.sh | sh
+   ```
 
-3. **Install the app when Claude asks.** The first time a workflow runs, Claude tells you it needs this app on your computer. Click **Download** in the chat (or [download it here](https://github.com/chauvoluuhuong/browser-workflow-bridge/releases/latest/download/browser-workflow.mcpb)), open the file, and click **Install** when Claude asks.
+2. **Quit your AI app and open it again.**
 
-4. **Click "Link this computer"** in the chat. That connects the app to your Browser Workflow. There is nothing to copy or paste.
+3. **Ask for something to automate**, for example: *"Create a workflow that opens example.com and collects the page title."*
 
-That's all. From now on, workflows run on your computer.
+That's all. The app has Browser Workflow's tools itself and gets an account with no name for this computer, so there is no address to add and no computer to link. The [install guide](https://browser-workflow.web.app/install) has every step, how to remove it, and what to do if you already have an account with a username.
 
 ### In Claude Code (macOS, Windows, Linux)
 

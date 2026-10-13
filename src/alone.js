@@ -1,5 +1,8 @@
-// The app as the only thing the AI app has (BW_ALONE=1, set by the install command that asks for it):
-// no Browser Workflow connector to add and sign in to, and no computer to link.
+// The app as the only thing the AI app has: no Browser Workflow connector to add and sign in to, and
+// no computer to link. It is how the app starts on a computer that was never linked. A computer a
+// user linked the earlier way has the connector as well, so the app stays as it was there (the tools
+// would show twice); BW_ALONE=1 or 0 decides for the app (the install command sets it, and the Claude
+// Code plugin, which brings the connector, sets 0).
 //   1. With no token, the app asks the server for an account of its own (POST /account) instead of a
 //      pairing code. The token it gets is this account's one key, kept in `link.json` like any other.
 //   2. The app offers the server's tools itself. Their names, descriptions and inputs are in
@@ -9,14 +12,24 @@
 //      So does a card: its page is read from the server each time. Only the page's address is in the
 //      list, and an AI app keeps a page it fetched under its address, so the app asks the server for
 //      today's address when it starts (`cardAddress`): a changed card is then seen without a new app.
-// Without BW_ALONE nothing here is used, and the app is linked by pairing as before.
+// Not alone, nothing here is used, and the app is linked by pairing as before.
 import { readFileSync } from 'node:fs';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 
 const ACCOUNT = '/api/bridge/v1/account';
 const sleep = (ms) => new Promise((r) => { setTimeout(r, ms).unref?.(); });
 
-export const isAlone = (env = process.env) => env.BW_ALONE === '1';
+/**
+ * @param {{ BW_ALONE?: string, BW_BRIDGE_TOKEN?: string }} env
+ * @param {boolean} linkedByUser a user linked this computer the earlier way (pairing.js)
+ */
+export function isAlone(env = process.env, linkedByUser = false) {
+  if (env.BW_ALONE === '1') return true;
+  if (env.BW_ALONE === '0') return false;
+  // A token pasted in the settings is a user's link too.
+  const pasted = String(env.BW_BRIDGE_TOKEN ?? '').trim();
+  return !linkedByUser && (!pasted || pasted.startsWith('${'));
+}
 
 /** Tools that link a computer: an app with an account of its own has nothing to link. */
 const NOT_ALONE = new Set(['link_computer', 'ui_confirm_link', 'ui_new_bridge_token']);
