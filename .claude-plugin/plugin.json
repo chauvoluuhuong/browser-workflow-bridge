@@ -1,7 +1,7 @@
 {
   "name": "browser-workflow",
   "displayName": "Browser Workflow",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Runs your Browser Workflow automations in your own Chrome and keeps their results on your computer, and connects Claude to the Browser Workflow server. The bridge holds no workflow logic: it carries out the server's browser commands in tabs it opens.",
   "author": {
     "name": "chauvoluuhuong"
