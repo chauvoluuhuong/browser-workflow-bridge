@@ -50,7 +50,7 @@ export class Copies {
    *   onInCharge(): void,                       this copy is in charge now: pair or register
    *   onPassive(): void,                        another copy is: say nothing to the server
    *   status(): Promise<string>,                the status text, asked of the copy in charge
-   *   act(action: string): Promise<void>,       "pause" or "resume", carried out by the copy in charge
+   *   act(action: string): Promise<string | void>, "pause", "resume" or "login", carried out by the copy in charge
    *   onBrowser?(browser: object): void,        a passive copy learns the browser settings
    *   onReturned?(): void,                      a copy that was briefly in charge too has stepped back
    *   log?(m: string): void,
@@ -141,8 +141,9 @@ export class Copies {
       if (m.t === 'was_in_charge') return this.opts.onReturned?.();
       if (m.id === undefined) return;
       try {
-        if (m.t === 'act') await this.opts.act(String(m.action));
-        send(sock, { id: m.id, text: await this.opts.status() });
+        // An action may answer for itself (open_login_page); else the answer is the status.
+        const said = m.t === 'act' ? await this.opts.act(String(m.action)) : undefined;
+        send(sock, { id: m.id, text: typeof said === 'string' ? said : await this.opts.status() });
       } catch (e) {
         send(sock, { id: m.id, error: e?.message ?? String(e) });
       }
@@ -241,7 +242,7 @@ export class Copies {
   /** The status text of the copy in charge, for a passive copy. */
   status() { return this.ask({ t: 'status' }); }
 
-  /** Has the copy in charge pause or resume, and returns its status text. */
+  /** Has the copy in charge pause, resume or open the login page, and returns its answer (its status text, for the first two). */
   act(action) { return this.ask({ t: 'act', action }); }
 
   /** Leaves. Returns how many passive copies stay behind: one of them takes over. */

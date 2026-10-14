@@ -89,6 +89,7 @@ export const ALONE_INSTRUCTIONS = [
   'This app is all of Browser Workflow in this AI app: it has the tools that create, run and fix workflows, and it runs them in the user\'s own Chrome.',
   'There is no connector to add, nothing to sign in to and no computer to link: this computer has an account of its own. Never tell the user to link a computer, to add a connector or to install the app: it is installed, since you are reading this.',
   'When a tool says the app or the browser is not connected, or a run could not start, call bridge_status: it says what is wrong and what to do.',
+  'When the user wants to log in, sign up, or use an account they already have on this computer, call open_login_page: it opens the login page in their Chrome, and this computer is linked to that account once they log in; what they made before stays theirs.',
 ].join(' ');
 
 /** Given to Claude when the app starts (MCP instructions). */
