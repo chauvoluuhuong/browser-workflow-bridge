@@ -35,7 +35,7 @@ You need [Google Chrome](https://www.google.com/chrome/) and the Claude desktop 
 
 3. **Ask for something to automate**, for example: *"Create a workflow that opens example.com and collects the page title."*
 
-That's all. The app has Browser Workflow's tools itself and gets an account with no name for this computer, so there is no address to add and no computer to link. The [install guide](https://browser-workflow.web.app/install) has every step, how to remove it, and what to do if you already have an account with a username.
+That's all. The app has Browser Workflow's tools itself and gets an account with no name for this computer, so there is no address to add and no computer to link. To use your own account, ask your AI app to **"log in"**: the login page opens in Chrome, and once you log in (or create an account there) this computer is linked to it, with the workflows you made before. The [install guide](https://browser-workflow.web.app/install) has every step, how to remove it, and what to do if you already have an account with a username.
 
 ### In Claude Code (macOS, Windows, Linux)
 

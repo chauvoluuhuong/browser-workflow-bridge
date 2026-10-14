@@ -28,13 +28,14 @@ import { cardAddress, createUpstream, isAlone, OwnAccount, readTools } from './a
 import { Copies } from './copies.js';
 import { ALONE_INSTRUCTIONS, connectorHint, INSTRUCTIONS, nextSteps, PRODUCTION, reachable } from './guide.js';
 import { createLog } from './log.js';
+import { READ_PROOF, WebLogin } from './login.js';
 import { clearLink, linkedByUser, Pairing, readLink, saveLink, usableToken } from './pairing.js';
 import { PROTOCOL, RestConnection } from './rest.js';
 import { LocalDriver } from './driver.js';
 import { Inspector } from './inspector.js';
 import { bridgeId, createStorage, dataDir } from './storage.js';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 
 // stdout is the MCP channel: keep every log on stderr. The same lines, and every command, also go to
 // `bridge.log` in the data folder (src/log.js).
@@ -89,6 +90,13 @@ const connection = new RestConnection({
   // The server doesn't know this token (a new one replaced it, or the account is gone): forget it and pair again.
   onBadToken: () => {
     if (settingToken) return;
+    // Another key was saved meanwhile (the login page linked this computer to another account): use it.
+    const saved = readLink(baseDir, server);
+    if (saved && saved !== token) {
+      token = saved;
+      connection.setToken(saved);
+      return;
+    }
     log('the saved link is no longer valid; pairing again');
     clearLink(baseDir);
     token = '';
@@ -119,6 +127,48 @@ const pairing = new (alone ? OwnAccount : Pairing)({
     connection.setToken(t);
   },
 });
+/** The key the login page brought (src/login.js): kept like any other, and used from now on. */
+function useKey(t) {
+  token = t;
+  try {
+    saveLink(baseDir, server, t, alone);
+  } catch (e) {
+    log(`could not save the link in ${baseDir}: ${e?.message ?? e}; it lasts until this app stops`);
+  }
+  connection.setToken(t);
+}
+
+// Logging in on the server's login page, in a tab of the Chrome this app drives (src/login.js).
+const LOGIN_TAB = 'login';
+const webLogin = new WebLogin({
+  server,
+  version: VERSION,
+  protocol: PROTOCOL,
+  token: () => token,
+  log,
+  debug,
+  openTab: async (url) => {
+    await driver.close(LOGIN_TAB);
+    const r = await driver.open(LOGIN_TAB, { ...browser, startUrl: url, timeoutMs: 30_000 });
+    if (!r.ok && r.error?.type === 'browser_unavailable') throw new Error(`Chrome could not be reached: ${r.error.raw}`);
+    return { proof: async () => { const v = await driver.run(LOGIN_TAB, READ_PROOF); return v.ok ? String(v.output ?? '') : ''; } };
+  },
+  onLinked: (t) => {
+    pairing.stop();
+    useKey(t);
+  },
+});
+
+/** What `open_login_page` answers. */
+async function openLogin() {
+  try {
+    await webLogin.begin();
+    return 'The Browser Workflow login page is open in the user\'s Chrome. Tell them in one short line to log in there, or to create an account with the link under the form. Once they have, this computer is linked to that account by itself and the page tells them to come back; what they made before stays theirs. Nothing else to do: do not ask for a username or password in the chat.';
+  } catch (e) {
+    return `The login page could not be opened: ${e?.message ?? e} Call bridge_status to see what to fix.`;
+  }
+}
+
 /** The browser the server chose for this account: workflows and the page_* tools use the same one. */
 function useBrowser(b) {
   browser = b;
@@ -169,6 +219,7 @@ async function statusText() {
     `Server: ${server}${serverUp ? '' : ' (not answering)'}`,
     `Token: ${token ? 'set' : alone ? 'not set (this computer is getting an account of its own)' : 'not set (this computer links itself by pairing)'}`,
     `Connection: ${STATES[c.state] ?? c.state}${c.state === 'connected' ? ` as ${c.account} since ${c.connectedAt}` : ''}`,
+    webLogin.state === 'waiting' ? 'Login page: open in Chrome, waiting for the user to log in or sign up' : undefined,
     c.lastError && c.state !== 'connected' ? `Last error: ${c.lastError}` : undefined,
     `Browser mode: ${browser.mode}${browser.cdpEndpoint ? ` (${browser.cdpEndpoint})` : ''}`,
     `Page inspector: ${inspectorState}`,
@@ -182,6 +233,7 @@ async function statusText() {
 }
 
 async function act(action) {
+  if (action === 'login') return openLogin();
   if (action === 'pause') {
     connection.pause();
     await executor.closeAll();
@@ -208,8 +260,22 @@ async function passiveStatus(action) {
   return `Browser Workflow app ${VERSION}\nConnection: starting…\n\nWhat to do next:\nCall bridge_status again in a few seconds.`;
 }
 
+/** Opens the login page from whichever copy was called: the copy in charge does it, since it holds the link. */
+async function loginFromAnyCopy() {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    if (copies.leading) return openLogin();
+    try {
+      return await copies.act('login');
+    } catch {
+      await new Promise((r) => setTimeout(r, 700));
+    }
+  }
+  return 'The app is starting. Call open_login_page again in a few seconds.';
+}
+
 async function shutdown() {
   pairing.stop();
+  webLogin.stop();
   // A passive copy that stays behind takes the session over: only the last copy signs off.
   const others = copies.stop();
   await connection.stop(others === 0);
@@ -240,7 +306,15 @@ async function startMcp() {
       mcp.registerTool(
         t.name,
         { title: t.title, description: t.description, inputSchema: fromJsonSchema(t.inputSchema), annotations: t.annotations, _meta: t._meta },
-        async (args) => upstream.call(t.name, args),
+        // The account card's "Create account or log in" button: the login page, in the Chrome this app drives,
+        // links this computer too. If it can't be opened, the server's own page for it, as before.
+        t.name === 'ui_account_link'
+          ? async (args) => {
+            const said = await loginFromAnyCopy();
+            if (said.startsWith('The Browser Workflow login page is open')) return { content: [{ type: 'text', text: said }], structuredContent: {} };
+            return upstream.call(t.name, args);
+          }
+          : async (args) => upstream.call(t.name, args),
       );
     }
     for (const r of offered.resources) {
@@ -248,6 +322,17 @@ async function startMcp() {
     }
     log(`alone in the AI app: offering ${offered.tools.length} of the server's tools`);
   }
+
+  mcp.registerTool(
+    'open_login_page',
+    {
+      title: 'Log in or sign up',
+      description: 'Opens the Browser Workflow login page in the user\'s Chrome, where they log in or create an account. This computer is then linked to that account by itself, and what was made here before goes with it. Call it when the user wants to log in, sign up or use their account on this computer. Never ask for a username or password in the chat.',
+      inputSchema: z.object({}),
+      annotations: { title: 'Log in or sign up', readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    },
+    async () => ({ content: [{ type: 'text', text: await loginFromAnyCopy() }] }),
+  );
 
   mcp.registerTool(
     'bridge_status',
