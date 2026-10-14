@@ -8,6 +8,8 @@
   },
   "license": "MIT",
   "homepage": "https://browser-workflow.web.app",
+  "privacyPolicyUrl": "https://browser-workflow.web.app/privacy",
+  "icon": ".claude-plugin/icon.png",
   "repository": "https://github.com/chauvoluuhuong/browser-workflow-bridge",
   "keywords": [
     "browser",
