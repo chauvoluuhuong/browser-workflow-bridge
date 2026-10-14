@@ -46,7 +46,7 @@ You also need [Node.js](https://nodejs.org) 22 or newer. In Claude Code, type th
 ```
 
 ```text
-/plugin install browser-workflow-bridge@browser-workflow
+/plugin install browser-workflow@browser-workflow
 ```
 
 Then start a new session and ask Claude to **"check the bridge status"**. It tells you what is left, and you click **Link this computer** in the chat. If it asks you to sign in, type `/mcp`, choose **browser-workflow**, then **Authenticate** (**Continue** is enough).
@@ -75,7 +75,7 @@ The pages a workflow opens load in Chrome as if you had visited them yourself. T
 
 ## Settings
 
-You rarely need these. In Claude Code, change them with `/plugin configure browser-workflow-bridge`.
+You rarely need these. In Claude Code, change them with `/plugin configure browser-workflow`.
 
 | Setting | What it's for |
 |---|---|
@@ -102,7 +102,7 @@ Still stuck? [Open an issue](https://github.com/chauvoluuhuong/browser-workflow-
 ## Update or remove
 
 - **Claude desktop app:** download the newest file from the link in step 3 and open it. To remove it, use **Settings → Extensions** in Claude.
-- **Claude Code:** `/plugin marketplace update browser-workflow` to update, and `/plugin uninstall browser-workflow-bridge@browser-workflow` to remove.
+- **Claude Code:** `/plugin marketplace update browser-workflow` to update, and `/plugin uninstall browser-workflow@browser-workflow` to remove.
 
 Your saved runs stay in their folder when you remove the app. Delete the folder to remove them.
 

@@ -6,7 +6,7 @@
   },
   "plugins": [
     {
-      "name": "browser-workflow-bridge",
+      "name": "browser-workflow",
       "source": "./",
       "description": "Lets the Browser Workflow connector run your workflows in your own Chrome."
     }
