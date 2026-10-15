@@ -8,6 +8,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { Copies, meetingPoint } from '../src/copies.js';
+import { saveLink } from '../src/pairing.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -146,9 +147,9 @@ async function fakeServer() {
 }
 
 /** Starts the app as an AI app does, and gives a way to call bridge_status and to end it. */
-function app(serverUrl, dir) {
+function app(serverUrl, dir, env = {}) {
   const p = spawn(process.execPath, [path.join(root, 'src', 'index.js')], {
-    env: { ...process.env, BW_NO_INSPECTOR: '1', BW_BRIDGE_TOKEN: 'bwb_test', BW_SERVER_URL: serverUrl, BW_DATA_DIR: dir, BW_SETTLE_MS: '1' },
+    env: { ...process.env, BW_NO_INSPECTOR: '1', BW_BRIDGE_TOKEN: 'bwb_test', BW_SERVER_URL: serverUrl, BW_DATA_DIR: dir, BW_SETTLE_MS: '1', ...env },
     stdio: ['pipe', 'pipe', 'ignore'],
   });
   let buffer = '';
@@ -170,6 +171,7 @@ function app(serverUrl, dir) {
     .then(() => p.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`));
   return {
     status: async () => { await ready; return (await rpc('tools/call', { name: 'bridge_status', arguments: {} })).result.content[0].text; },
+    call: async (name, args = {}) => { await ready; return (await rpc('tools/call', { name, arguments: args })).result.content[0].text; },
     end: () => new Promise((r) => { p.once('exit', r); p.stdin.end(); }),
     kill: () => p.kill('SIGKILL'),
   };
@@ -207,4 +209,48 @@ test('three copies of the app register once, and only the last one signs off', {
   await c.end();
   await until(() => s.seen.signOffs === 1);
   assert.equal(s.seen.registers, 2);
+});
+
+test('alone, a passive copy passes requests on with the key the copy in charge saved last', { timeout: 60_000 }, async (t) => {
+  // A stand-in for the server that answers show_account with the account its key belongs to.
+  const accounts = { bwb_old: 'the computer\'s own account', bwb_new: 'anna' };
+  const server = http.createServer((req, res) => {
+    const json = (status, body) => res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body));
+    if (req.url === '/signals') return res.writeHead(200, { 'content-type': 'text/event-stream' }).write('event: keep-alive\ndata: null\n\n');
+    let raw = '';
+    req.on('data', (d) => { raw += d; });
+    req.on('end', () => {
+      const key = /^Bearer (\S+)$/.exec(req.headers.authorization ?? '')?.[1] ?? '';
+      if (req.url === '/api/bridge/v1/session' && req.method === 'POST') {
+        return json(200, { session: JSON.parse(raw).instance, account: accounts[key], accountId: key, signalUrl: `${url}/signals` });
+      }
+      if (req.url === '/mcp' && req.method === 'POST') {
+        const m = JSON.parse(raw);
+        if (m.id === undefined) return res.writeHead(202).end();
+        if (!accounts[key]) return json(401, { error: 'invalid_token' });
+        if (m.method === 'initialize') return json(200, { jsonrpc: '2.0', id: m.id, result: { protocolVersion: m.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '0' } } });
+        if (m.method === 'tools/call') return json(200, { jsonrpc: '2.0', id: m.id, result: { content: [{ type: 'text', text: `Account: ${accounts[key]}` }] } });
+      }
+      if (req.url === '/mcp') return res.writeHead(405).end();
+      json(404, {});
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const dir = folder(t);
+  saveLink(dir, url, 'bwb_old', true);
+  const apps = [];
+  t.after(async () => { for (const a of apps) a.kill(); server.closeAllConnections(); await new Promise((r) => server.close(r)); });
+  const start = () => { const a = app(url, dir, { BW_ALONE: '1', BW_BRIDGE_TOKEN: '' }); apps.push(a); return a; };
+
+  const a = start();
+  assert.match(await a.status(), /Browser Workflow app/);
+  const b = start();
+  await until(async () => /Connection: connected as the computer's own account/.test(await b.status()));
+  assert.equal(await b.call('show_account'), 'Account: the computer\'s own account');
+
+  // The user logs in on the login page: the copy in charge gets the account's key and saves it (index.js, useKey).
+  saveLink(dir, url, 'bwb_new', true);
+  // The AI app asks the passive copy, the one its chat talks to, for the account.
+  assert.equal(await b.call('show_account'), 'Account: anna');
 });
