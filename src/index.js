@@ -35,7 +35,7 @@ import { LocalDriver } from './driver.js';
 import { Inspector } from './inspector.js';
 import { bridgeId, createStorage, dataDir } from './storage.js';
 
-const VERSION = '1.2.1';
+const VERSION = '1.2.2';
 
 // stdout is the MCP channel: keep every log on stderr. The same lines, and every command, also go to
 // `bridge.log` in the data folder (src/log.js).
@@ -300,8 +300,10 @@ async function startMcp() {
 
   // Alone: the server's tools and cards, from the list shipped with the app; each call is passed on.
   if (offered) {
-    // Any copy can pass a request on: it needs only the key, which the copy in charge saved in the data folder.
-    const upstream = createUpstream({ server, token: () => token || readLink(baseDir, server), version: VERSION, log });
+    // Any copy can pass a request on: it needs only the key. The copy in charge holds it; a passive copy
+    // reads the one the copy in charge saved in the data folder, each time: logging in on the login page
+    // replaces it, and the key this copy read when it started is the computer's earlier account.
+    const upstream = createUpstream({ server, token: () => settingToken || (copies.leading ? token : readLink(baseDir, server)), version: VERSION, log });
     for (const t of offered.tools) {
       mcp.registerTool(
         t.name,
