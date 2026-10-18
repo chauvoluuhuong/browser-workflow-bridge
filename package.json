@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Local bridge between the Browser Workflow server and the user's Chrome (Claude plugin).",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "engines": {
     "node": ">=22"
   },

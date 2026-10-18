@@ -10,7 +10,7 @@
   "documentation": "https://github.com/chauvoluuhuong/browser-workflow-bridge#readme",
   "support": "https://github.com/chauvoluuhuong/browser-workflow-bridge/issues",
   "repository": { "type": "git", "url": "https://github.com/chauvoluuhuong/browser-workflow-bridge" },
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "icon": "icon.png",
   "keywords": ["browser", "automation", "chrome", "workflow"],
   "server": {
