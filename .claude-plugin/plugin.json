@@ -6,7 +6,7 @@
   "author": {
     "name": "chauvoluuhuong"
   },
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "homepage": "https://browser-workflow.web.app",
   "privacyPolicyUrl": "https://browser-workflow.web.app/privacy",
   "icon": ".claude-plugin/icon.png",

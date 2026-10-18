@@ -112,4 +112,6 @@ How it works, the commands it accepts, the protocol and how to build it: [DEVELO
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Copyright (C) 2026 chauvoluuhuong. Licensed under the GNU Affero General Public License, version 3 (AGPL-3.0). See [LICENSE](LICENSE).
+
+You may read, change and run your own copy. If you share a changed copy, or let people use it over a network, you must publish its source code under the same licence. Versions released before this change stay under the MIT licence they came with.
